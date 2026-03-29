@@ -1044,6 +1044,14 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[config] agents.defaults.model.primary exit=${cfgModelResult.code}\n${cfgModelResult.output || ""}`;
       }
 
+      extra +=
+        "\n[setup] Clearing model fallbacks so only the primary model is used (avoids xAI/other providers without keys)...\n";
+      const fallbacksClear = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["models", "fallbacks", "clear"]),
+      );
+      extra += `[models fallbacks clear] exit=${fallbacksClear.code}\n${fallbacksClear.output || ""}`;
+
       async function configureChannel(name, cfgObj) {
         const set = await runCmd(
           OPENCLAW_NODE,
