@@ -997,12 +997,25 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
       const resolvedModel = resolveSetupModel(payload);
       if (resolvedModel) {
-        extra += `[setup] Setting model to ${resolvedModel}...\n`;
+        extra += `[setup] Setting default model to ${resolvedModel}...\n`;
         const modelResult = await runCmd(
           OPENCLAW_NODE,
           clawArgs(["models", "set", resolvedModel]),
         );
         extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
+
+        const modelCfgJson = JSON.stringify({ primary: resolvedModel });
+        const cfgModelResult = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "config",
+            "set",
+            "agents.defaults.model",
+            modelCfgJson,
+            "--strict-json",
+          ]),
+        );
+        extra += `[config] agents.defaults.model.primary exit=${cfgModelResult.code}\n${cfgModelResult.output || ""}`;
       }
 
       async function configureChannel(name, cfgObj) {
