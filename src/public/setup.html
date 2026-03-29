@@ -45,6 +45,8 @@
       devices: [],
       devicesPending: [],
       devicesPaired: [],
+      gatewayHealth: null,
+      gatewayPollId: null,
 
       get currentGroup() {
         return this.authGroups.find(g => g.value === this.selectedGroup);
@@ -64,7 +66,31 @@
         return res.json();
       },
 
+      stopGatewayPoll() {
+        if (this.gatewayPollId) {
+          clearInterval(this.gatewayPollId);
+          this.gatewayPollId = null;
+        }
+      },
+
+      async refreshGatewayHealth() {
+        if (!this.configured) return;
+        try {
+          const j = await this.httpJson('/setup/healthz');
+          this.gatewayHealth = {
+            configured: j.configured,
+            gatewayRunning: j.gatewayRunning,
+            gatewayStarting: j.gatewayStarting,
+            gatewayReachable: j.gatewayReachable,
+          };
+        } catch (e) {
+          this.gatewayHealth = { error: String(e) };
+        }
+      },
+
       async refreshStatus() {
+        this.stopGatewayPoll();
+        this.gatewayHealth = null;
         this.status = 'Loading...';
         try {
           const j = await this.httpJson('/setup/api/status');
@@ -81,6 +107,10 @@
             this.log += '\nNote: this openclaw build does not list telegram in `channels add --help`. Telegram auto-add will be skipped.\n';
           }
           this.isReady = true;
+          if (this.configured) {
+            await this.refreshGatewayHealth();
+            this.gatewayPollId = setInterval(() => this.refreshGatewayHealth(), 3000);
+          }
         } catch (e) {
           this.status = 'Error: ' + String(e);
           this.isReady = true;
@@ -359,6 +389,10 @@
       </p>
     </div>
 
+    <div x-show="!isReady" class="card mb-6">
+      <p class="text-muted text-sm mb-4">Loading setup… If this lasts more than ~30s, the server is still probing the OpenClaw CLI or the request failed (check Railway logs).</p>
+      <div class="spinner spinner-lg spinner-red"></div>
+    </div>
 
     <div class="card card-compact mb-6">
       <div class="card-header">
@@ -381,9 +415,27 @@
     </div>
 
     <div x-show="isReady && configured" x-cloak class="card-group">
+      <div class="card" x-show="gatewayHealth && gatewayHealth.error" style="border-color:#f59e0b">
+        <h3 class="card-title" style="font-size:1rem">Gateway status unavailable</h3>
+        <p class="text-sm text-muted" x-text="gatewayHealth.error"></p>
+      </div>
+
+      <div class="card" x-show="gatewayHealth && !gatewayHealth.error">
+        <h3 class="card-title" style="font-size:1rem">Gateway status</h3>
+        <p x-show="gatewayHealth.gatewayRunning && gatewayHealth.gatewayReachable" class="text-sm" style="margin-top:0.5rem">
+          <strong>Ready.</strong> Open the dashboard: <a href="/openclaw" class="link-teal" style="text-decoration:underline">/openclaw</a> (same as <strong>Open OpenClaw UI</strong> above). This site does not auto-redirect after setup.
+        </p>
+        <p x-show="gatewayHealth.gatewayStarting || (gatewayHealth.gatewayRunning && !gatewayHealth.gatewayReachable)" class="text-sm text-muted" style="margin-top:0.5rem;line-height:1.5">
+          The gateway is still starting (first boot often takes 1–2 minutes). This box refreshes every few seconds. If it never becomes ready, open <a href="/logs" target="_blank" class="link-teal" style="text-decoration:underline">View Logs</a> from below or check Railway deploy logs.
+        </p>
+        <p x-show="gatewayHealth.configured && !gatewayHealth.gatewayRunning && !gatewayHealth.gatewayStarting" class="text-sm text-muted" style="margin-top:0.5rem">
+          Gateway process is not running yet; the wrapper should start it. If this stays for several minutes, check logs and disk/volume permissions for <code class="code-inline">OPENCLAW_STATE_DIR</code>.
+        </p>
+      </div>
+
       <div class="card">
         <h2 class="card-title">Setup Complete</h2>
-        <p class="text-muted text-sm">Your OpenClaw instance is configured and running</p>
+        <p class="text-muted text-sm">Your OpenClaw instance is configured. Use the dashboard link when gateway status shows <strong>Ready</strong>.</p>
       </div>
 
       <div class="card">

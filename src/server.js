@@ -108,6 +108,32 @@ async function getOpenclawInfo() {
   return { version: cachedOpenclawVersion, channelsHelp: cachedChannelsHelp };
 }
 
+const OPENCLAW_INFO_PROBE_TIMEOUT_MS = Number.parseInt(
+  process.env.OPENCLAW_INFO_PROBE_TIMEOUT_MS ?? "12000",
+  10,
+);
+
+/** Status page must not hang if `openclaw --version` / help never returns (bad entry, stuck CLI). */
+async function getOpenclawInfoForStatus() {
+  try {
+    return await Promise.race([
+      getOpenclawInfo(),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("openclaw probe timeout")),
+          OPENCLAW_INFO_PROBE_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+  } catch {
+    return {
+      version:
+        "(OpenClaw CLI probe timed out — check OPENCLAW_ENTRY, disk, and deploy logs)",
+      channelsHelp: "",
+    };
+  }
+}
+
 const INTERNAL_GATEWAY_PORT = Number.parseInt(
   process.env.INTERNAL_GATEWAY_PORT ?? "18789",
   10,
@@ -466,7 +492,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
 });
 
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
-  const { version, channelsHelp } = await getOpenclawInfo();
+  const { version, channelsHelp } = await getOpenclawInfoForStatus();
 
   const authGroups = [
     {
