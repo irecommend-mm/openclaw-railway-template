@@ -6,5 +6,8 @@ healthcheckPath = "/setup/healthz"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 
+# Railway: add a Volume → mount path MUST be /data (same path entrypoint uses).
 [variables]
 PORT = "8080"
+OPENCLAW_STATE_DIR = "/data/.openclaw"
+OPENCLAW_WORKSPACE_DIR = "/data/workspace"

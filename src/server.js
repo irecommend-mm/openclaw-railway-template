@@ -9,13 +9,30 @@ import httpProxy from "http-proxy";
 import pty from "node-pty";
 import { WebSocketServer } from "ws";
 
+/** Docker image and Railway template use /data as the volume mount; avoid ~/.openclaw inside the container (lost on redeploy). */
+function hasDataDir() {
+  try {
+    return fs.existsSync("/data") && fs.statSync("/data").isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+const STATE_DIR = (() => {
+  const fromEnv = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (fromEnv) return fromEnv;
+  if (hasDataDir()) return "/data/.openclaw";
+  return path.join(os.homedir(), ".openclaw");
+})();
+
+const WORKSPACE_DIR = (() => {
+  const fromEnv = process.env.OPENCLAW_WORKSPACE_DIR?.trim();
+  if (fromEnv) return fromEnv;
+  if (hasDataDir()) return "/data/workspace";
+  return path.join(STATE_DIR, "workspace");
+})();
+
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
-const STATE_DIR =
-  process.env.OPENCLAW_STATE_DIR?.trim() ||
-  path.join(os.homedir(), ".openclaw");
-const WORKSPACE_DIR =
-  process.env.OPENCLAW_WORKSPACE_DIR?.trim() ||
-  path.join(STATE_DIR, "workspace");
 
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
@@ -1548,8 +1565,14 @@ const server = app.listen(PORT, () => {
   if (!isConfigured()) {
     log.warn(
       "wrapper",
-      "No openclaw.json yet — Telegram/Discord will not work until you complete /setup. If this persists after setup, mount a Railway volume on /data and set OPENCLAW_STATE_DIR=/data/.openclaw",
+      "No openclaw.json yet — complete /setup once. State is stored under STATE_DIR above; it survives redeploys only if that path is on a persistent volume.",
     );
+    if (process.env.RAILWAY_ENVIRONMENT && hasDataDir()) {
+      log.warn(
+        "wrapper",
+        "Railway: create a Volume for this service with mount path exactly /data (see README). Without it, every deploy starts with an empty disk and configured=false.",
+      );
+    }
   }
 
   if (isConfigured()) {
