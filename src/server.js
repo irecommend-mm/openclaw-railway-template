@@ -1541,7 +1541,16 @@ const server = app.listen(PORT, () => {
   log.info("wrapper", `listening on port ${PORT}`);
   log.info("wrapper", `setup wizard: http://localhost:${PORT}/setup`);
   log.info("wrapper", `web TUI: ${ENABLE_WEB_TUI ? "enabled" : "disabled"}`);
-  log.info("wrapper", `configured: ${isConfigured()}`);
+  log.info(
+    "wrapper",
+    `STATE_DIR=${STATE_DIR} WORKSPACE_DIR=${WORKSPACE_DIR} config=${configPath()} configured=${isConfigured()}`,
+  );
+  if (!isConfigured()) {
+    log.warn(
+      "wrapper",
+      "No openclaw.json yet — Telegram/Discord will not work until you complete /setup. If this persists after setup, mount a Railway volume on /data and set OPENCLAW_STATE_DIR=/data/.openclaw",
+    );
+  }
 
   if (isConfigured()) {
     (async () => {
