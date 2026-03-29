@@ -1565,12 +1565,19 @@ const server = app.listen(PORT, () => {
   if (!isConfigured()) {
     log.warn(
       "wrapper",
-      "No openclaw.json yet — complete /setup once. State is stored under STATE_DIR above; it survives redeploys only if that path is on a persistent volume.",
+      "No openclaw.json yet — open /setup in a browser, finish the wizard, and click Run Setup. Until then, configured=false is normal.",
     );
-    if (process.env.RAILWAY_ENVIRONMENT && hasDataDir()) {
+    const volMount = process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
+    const volumeOnData = volMount === "/data" || volMount === "/data/";
+    if (process.env.RAILWAY_ENVIRONMENT && hasDataDir() && !volumeOnData) {
       log.warn(
         "wrapper",
-        "Railway: create a Volume for this service with mount path exactly /data (see README). Without it, every deploy starts with an empty disk and configured=false.",
+        "Railway: attach a Volume to this service with mount path exactly /data or OPENCLAW_STATE_DIR will be wiped on every deploy.",
+      );
+    } else if (process.env.RAILWAY_ENVIRONMENT && volumeOnData) {
+      log.info(
+        "wrapper",
+        "Railway reports a volume at /data — after you complete /setup once, openclaw.json will persist across redeploys.",
       );
     }
   }
