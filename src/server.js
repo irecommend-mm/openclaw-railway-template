@@ -792,6 +792,45 @@ function buildOnboardArgs(payload) {
   return args;
 }
 
+/** Default primary model per auth choice (provider/model). Used after onboard so quickstart's
+ *  Anthropic default does not stick when the user picked another provider. */
+const AUTH_CHOICE_DEFAULT_MODEL = {
+  apiKey: "anthropic/claude-sonnet-4-20250514",
+  "openai-api-key": "openai/gpt-4o",
+  "openai-codex": "openai/gpt-4o",
+  "gemini-api-key": "google/gemini-2.0-flash",
+  "google-gemini-cli": "google/gemini-2.0-flash",
+  "deepseek-api-key": "deepseek/deepseek-chat",
+  "xai-api-key": "xai/grok-2-latest",
+  "mistral-api-key": "mistral/mistral-large-latest",
+  "together-api-key": "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "moonshot-api-key": "moonshot/moonshot-v1-8k",
+  "moonshot-api-key-cn": "moonshot/moonshot-v1-8k",
+};
+
+/**
+ * Resolves the model id for `openclaw models set` after onboarding.
+ * Bare IDs (no `/`) are resolved against the selected auth's provider; otherwise OpenClaw
+ * applies them to the global default provider (often anthropic after quickstart).
+ */
+function resolveSetupModel(payload) {
+  const auth = payload.authChoice;
+  const raw = (payload.model || "").trim();
+  const fallback = auth ? AUTH_CHOICE_DEFAULT_MODEL[auth] : undefined;
+
+  if (raw.includes("/")) {
+    return raw;
+  }
+  if (raw) {
+    if (fallback) {
+      const prefix = fallback.split("/")[0];
+      return `${prefix}/${raw}`;
+    }
+    return raw;
+  }
+  return fallback || null;
+}
+
 function runCmd(cmd, args, opts = {}) {
   return new Promise((resolve) => {
     const proc = childProcess.spawn(cmd, args, {
@@ -956,11 +995,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       );
       extra += `[config] gateway.trustedProxies exit=${proxiesResult.code}\n`;
 
-      if (payload.model?.trim()) {
-        extra += `[setup] Setting model to ${payload.model.trim()}...\n`;
+      const resolvedModel = resolveSetupModel(payload);
+      if (resolvedModel) {
+        extra += `[setup] Setting model to ${resolvedModel}...\n`;
         const modelResult = await runCmd(
           OPENCLAW_NODE,
-          clawArgs(["models", "set", payload.model.trim()]),
+          clawArgs(["models", "set", resolvedModel]),
         );
         extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
       }
