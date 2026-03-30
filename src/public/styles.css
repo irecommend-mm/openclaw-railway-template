@@ -458,6 +458,18 @@ img { max-width: 100%; height: auto; }
 }
 .action-emerald .action-btn:hover:not(:disabled) { background: #a7f3d0; }
 
+.action-sky { background: #e0f2fe; border-color: #7dd3fc; }
+.action-sky .action-icon { background: rgba(14,165,233,0.2); }
+.action-sky .action-icon svg { color: #0284c7; }
+.action-sky .action-title { color: #0369a1; }
+.action-sky .action-desc { color: rgba(3,105,161,0.85); }
+.action-sky .action-btn {
+  background: #bae6fd;
+  color: #0369a1;
+  border-color: #38bdf8;
+}
+.action-sky .action-btn:hover:not(:disabled) { background: #7dd3fc; }
+
 @media (prefers-color-scheme: dark) {
   .action-blue { background: rgba(30,58,138,0.2); border-color: #1e40af; }
   .action-blue .action-icon svg { color: #60a5fa; }
@@ -486,6 +498,13 @@ img { max-width: 100%; height: auto; }
   .action-emerald .action-desc { color: rgba(52,211,153,0.7); }
   .action-emerald .action-btn { background: rgba(6,78,59,0.4); color: #6ee7b7; border-color: #047857; }
   .action-emerald .action-btn:hover:not(:disabled) { background: rgba(6,78,59,0.6); }
+
+  .action-sky { background: rgba(12,74,110,0.25); border-color: #0369a1; }
+  .action-sky .action-icon svg { color: #38bdf8; }
+  .action-sky .action-title { color: #7dd3fc; }
+  .action-sky .action-desc { color: rgba(125,211,252,0.75); }
+  .action-sky .action-btn { background: rgba(12,74,110,0.45); color: #7dd3fc; border-color: #0284c7; }
+  .action-sky .action-btn:hover:not(:disabled) { background: rgba(12,74,110,0.65); }
 }
 
 .config-summary {

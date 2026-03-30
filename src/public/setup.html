@@ -233,6 +233,26 @@
         }
       },
 
+      async applyReminderDefaults() {
+        this.log = 'Applying reminder / heartbeat defaults...\n';
+        this.loading = true;
+        try {
+          const res = await fetch('/setup/api/reminder-defaults', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+          });
+          const text = await res.text();
+          let j;
+          try { j = JSON.parse(text); } catch (_e) { j = { ok: false, output: text }; }
+          this.log += (j.output || JSON.stringify(j, null, 2));
+        } catch (e) {
+          this.log += '\nError: ' + String(e) + '\n';
+        } finally {
+          this.loading = false;
+        }
+      },
+
       async runDoctor() {
         this.log = 'Running doctor...\n';
         this.loading = true;
@@ -488,6 +508,19 @@
                 <svg class="spinner-inline" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path style="opacity:0.75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
                 Running...
               </span>
+            </button>
+          </div>
+
+          <div class="action-card action-sky">
+            <div class="action-card-header">
+              <div class="action-icon">
+                <svg class="icon-md" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              </div>
+              <span class="action-title">Reminder / heartbeat fix</span>
+            </div>
+            <p class="action-desc">Apply heartbeat delivery to your last chat, optional timezone from Railway vars, and create HEARTBEAT.md if missing. Use after upgrading the template.</p>
+            <button @click="applyReminderDefaults()" :disabled="loading" class="action-btn">
+              Apply reminder defaults
             </button>
           </div>
 

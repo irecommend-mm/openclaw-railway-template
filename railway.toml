@@ -7,6 +7,8 @@ healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 
 # Railway: add a Volume → mount path MUST be /data (same path entrypoint uses).
+# Optional (reminders): OPENCLAW_USER_TIMEZONE=Asia/Yangon  OPENCLAW_HEARTBEAT_EVERY=15m
+# Set OPENCLAW_HEARTBEAT_TARGET=skip to keep upstream default (no DM delivery).
 [variables]
 PORT = "8080"
 OPENCLAW_STATE_DIR = "/data/.openclaw"

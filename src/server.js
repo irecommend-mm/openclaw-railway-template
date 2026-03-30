@@ -172,6 +172,13 @@ const TUI_MAX_SESSION_MS = Number.parseInt(
   10,
 );
 
+/** Deliver heartbeat alerts to the last channel you used (e.g. Telegram). OpenClaw default is "none" → reminders never ping you. */
+const OPENCLAW_HEARTBEAT_TARGET =
+  process.env.OPENCLAW_HEARTBEAT_TARGET?.trim() || "last";
+
+const OPENCLAW_USER_TIMEZONE = process.env.OPENCLAW_USER_TIMEZONE?.trim();
+const OPENCLAW_HEARTBEAT_EVERY = process.env.OPENCLAW_HEARTBEAT_EVERY?.trim();
+
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
 }
@@ -974,6 +981,77 @@ function validatePayload(payload) {
   return null;
 }
 
+/** Heartbeat + timezone + HEARTBEAT.md so reminders are not “forgotten” (OpenClaw default heartbeat.target is none). */
+async function applyReminderAndHeartbeatDefaults() {
+  let extra = "";
+  if (OPENCLAW_HEARTBEAT_TARGET && OPENCLAW_HEARTBEAT_TARGET !== "skip") {
+    extra += `[setup] Heartbeat delivery target=${OPENCLAW_HEARTBEAT_TARGET} (alerts go to your last chat, e.g. Telegram)...\n`;
+    const hbT = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs([
+        "config",
+        "set",
+        "agents.defaults.heartbeat.target",
+        OPENCLAW_HEARTBEAT_TARGET,
+      ]),
+    );
+    extra += `[config] heartbeat.target exit=${hbT.code}\n${hbT.output || ""}`;
+  }
+
+  if (OPENCLAW_HEARTBEAT_EVERY) {
+    extra += `[setup] Heartbeat interval ${OPENCLAW_HEARTBEAT_EVERY}...\n`;
+    const hbE = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs([
+        "config",
+        "set",
+        "agents.defaults.heartbeat.every",
+        OPENCLAW_HEARTBEAT_EVERY,
+      ]),
+    );
+    extra += `[config] heartbeat.every exit=${hbE.code}\n${hbE.output || ""}`;
+  }
+
+  if (OPENCLAW_USER_TIMEZONE) {
+    extra += `[setup] userTimezone=${OPENCLAW_USER_TIMEZONE}...\n`;
+    const tz = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs([
+        "config",
+        "set",
+        "agents.defaults.userTimezone",
+        OPENCLAW_USER_TIMEZONE,
+      ]),
+    );
+    extra += `[config] userTimezone exit=${tz.code}\n${tz.output || ""}`;
+  }
+
+  try {
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const heartbeatMdPath = path.join(WORKSPACE_DIR, "HEARTBEAT.md");
+    if (!fs.existsSync(heartbeatMdPath)) {
+      fs.writeFileSync(
+        heartbeatMdPath,
+        [
+          "# Heartbeat checklist",
+          "",
+          "- Check MEMORY.md (and daily files under memory/) for commitments and due times.",
+          "- If the user asked for a reminder, ensure it is on disk (MEMORY.md with clear date/time) or scheduled via OpenClaw cron — chat-only promises are forgotten after compaction.",
+          "- When nothing needs a message, acknowledge with HEARTBEAT_OK only.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      extra +=
+        "[setup] Created HEARTBEAT.md starter so heartbeats scan for reminders.\n";
+    }
+  } catch (err) {
+    extra += `[setup] HEARTBEAT.md seed failed: ${String(err)}\n`;
+  }
+
+  return extra;
+}
+
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   try {
     if (isConfigured()) {
@@ -1068,6 +1146,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         clawArgs(["models", "fallbacks", "clear"]),
       );
       extra += `[models fallbacks clear] exit=${fallbacksClear.code}\n${fallbacksClear.output || ""}`;
+      extra += await applyReminderAndHeartbeatDefaults();
 
       async function configureChannel(name, cfgObj) {
         const set = await runCmd(
@@ -1194,6 +1273,25 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
       .send("OK - stopped gateway and deleted config file. You can rerun setup now.");
   } catch (err) {
     res.status(500).type("text/plain").send(String(err));
+  }
+});
+
+app.post("/setup/api/reminder-defaults", requireSetupAuth, async (_req, res) => {
+  try {
+    if (!isConfigured()) {
+      return res.status(400).json({
+        ok: false,
+        output: "Not configured — complete /setup first.",
+      });
+    }
+    let out = await applyReminderAndHeartbeatDefaults();
+    out += "\n[setup] Restarting gateway...\n";
+    await restartGateway();
+    out += "[setup] Done. Heartbeat should deliver to your last Telegram/Discord DM when reminders are due.\n";
+    return res.json({ ok: true, output: out });
+  } catch (err) {
+    log.error("setup", `reminder-defaults: ${String(err)}`);
+    return res.status(500).json({ ok: false, output: String(err) });
   }
 });
 
