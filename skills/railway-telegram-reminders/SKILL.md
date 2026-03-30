@@ -8,11 +8,13 @@ description: >-
   fall back to openclaw cron with --channel last.
 ---
 
-<!-- openclaw-railway-template-skill: railway-telegram-reminders v1 -->
+<!-- openclaw-railway-template-skill: railway-telegram-reminders v2 -->
 
 # Railway Telegram reminders (file + chrono)
 
 This skill applies only on the **Railway wrapper** deployment: the Node process parses **when** with **chrono-node**, stores rows in **`data/reminders.json`** under the OpenClaw workspace, and sends Telegram messages on a short poll using the bot token already in **`openclaw.json`** (`channels.telegram`). It does **not** patch OpenClaw core; it uses normal workspace **`skills/`** and the wrapper HTTP API.
+
+**Wall-clock times** (e.g. “12:10 pm”) use **`OPENCLAW_USER_TIMEZONE`** and/or **`agents.defaults.userTimezone`** as an **IANA** name (e.g. `Asia/Yangon`). The API returns **`scheduledAt` in UTC (`…Z`)** — that is normal; compare with local time mentally or convert. **Relative** phrases like “in 2 minutes” are not affected. Reminders created before the timezone fix may have wrong `scheduledAt`; cancel and re-add them.
 
 ## When to apply
 
@@ -39,7 +41,7 @@ curl -sS -X POST "http://127.0.0.1:${PORT:-8080}/__railway/reminder" \
 - **`when`**: natural language; examples: `in 5 min`, `in 10 minutes`, `at 12am`, `tomorrow 9am`, `2026-03-30 11:02`.
 - **`chatId`**: Telegram chat id string or number for the user.
 
-**Timezone:** set **`OPENCLAW_USER_TIMEZONE`** on Railway (and/or **`agents.defaults.userTimezone`**) so wall-clock phrases like **`12am`** match the user’s local day.
+**Timezone:** set **`OPENCLAW_USER_TIMEZONE`** on Railway (and/or **`agents.defaults.userTimezone`**) to an **IANA** id (`Asia/Yangon`, not `UTC+6:30`) so phrases like **`12:10 pm`** are interpreted in the user’s local day. Without it, the container uses **UTC** for wall-clock parsing.
 
 ## Cancel
 

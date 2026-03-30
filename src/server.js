@@ -995,7 +995,7 @@ function validatePayload(payload) {
 /** Bundled OpenClaw workspace skill (OpenClaw loads workspace `skills/` — no openclaw.json edits). */
 const RAILWAY_TELEGRAM_REMINDERS_SKILL = "railway-telegram-reminders";
 const RAILWAY_TELEGRAM_REMINDERS_SKILL_MARKER =
-  "<!-- openclaw-railway-template-skill: railway-telegram-reminders v1 -->";
+  "<!-- openclaw-railway-template-skill: railway-telegram-reminders v2 -->";
 
 function syncRailwayTelegramRemindersSkill() {
   const srcDir = path.join(process.cwd(), "skills", RAILWAY_TELEGRAM_REMINDERS_SKILL);
@@ -1049,6 +1049,33 @@ function resolveChronoTimezone() {
   return typeof tz === "string" && tz.trim() ? tz.trim() : undefined;
 }
 
+/**
+ * chrono-node 2.x only applies timezone via ParsingReference `{ instant, timezone }`,
+ * where `timezone` must be **signed minutes east of UTC** (e.g. +390 for Asia/Yangon)
+ * or an entry in its abbr map — IANA strings like `Asia/Yangon` are ignored.
+ */
+function ianaToChronoOffsetMinutes(iana, instant) {
+  const d = new Date(instant);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: iana,
+      timeZoneName: "longOffset",
+    }).formatToParts(d);
+    const raw = parts.find((p) => p.type === "timeZoneName")?.value;
+    if (!raw) return null;
+    const token = raw.replace(/\u2212/g, "-");
+    const m = token.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/i);
+    if (!m) return null;
+    const sign = m[1] === "-" ? -1 : 1;
+    const h = Number.parseInt(m[2], 10);
+    const min = m[3] != null ? Number.parseInt(m[3], 10) : 0;
+    return sign * (h * 60 + min);
+  } catch {
+    return null;
+  }
+}
+
 function remindersJsonPath() {
   return path.join(WORKSPACE_DIR, "data", "reminders.json");
 }
@@ -1071,11 +1098,23 @@ function saveRemindersFile(data) {
 }
 
 function parseReminderScheduledAt(whenStr, refDate = new Date()) {
-  const tz = resolveChronoTimezone();
+  const tzIana = resolveChronoTimezone();
+  let offsetMinutes = 0;
+  if (tzIana) {
+    const off = ianaToChronoOffsetMinutes(tzIana, refDate);
+    if (off != null) {
+      offsetMinutes = off;
+    } else {
+      log.warn(
+        "telegram-reminder",
+        `unknown or unsupported IANA timezone for reminders: ${tzIana} — using UTC wall clock`,
+      );
+    }
+  }
+  const ref = { instant: refDate, timezone: offsetMinutes };
   const opts = { forwardDate: true };
-  if (tz) opts.timezone = tz;
   try {
-    const parsed = chrono.parseDate(String(whenStr ?? "").trim(), refDate, opts);
+    const parsed = chrono.parseDate(String(whenStr ?? "").trim(), ref, opts);
     if (parsed && parsed.getTime() > refDate.getTime()) {
       return parsed.toISOString();
     }
