@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import * as chrono from "chrono-node";
 import express from "express";
 import httpProxy from "http-proxy";
 import pty from "node-pty";
@@ -465,6 +466,16 @@ function requireSetupAuth(req, res, next) {
   if (!isValid) {
     res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
     return res.status(401).send("Invalid password");
+  }
+  return next();
+}
+
+function requireGatewayBearer(req, res, next) {
+  const header = req.headers.authorization || "";
+  const m = /^Bearer\s+(\S+)/i.exec(header);
+  const token = m?.[1]?.trim();
+  if (!token || token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
   }
   return next();
 }
@@ -981,8 +992,154 @@ function validatePayload(payload) {
   return null;
 }
 
+/** Bundled OpenClaw workspace skill (OpenClaw loads workspace `skills/` — no openclaw.json edits). */
+const RAILWAY_TELEGRAM_REMINDERS_SKILL = "railway-telegram-reminders";
+const RAILWAY_TELEGRAM_REMINDERS_SKILL_MARKER =
+  "<!-- openclaw-railway-template-skill: railway-telegram-reminders v1 -->";
+
+function syncRailwayTelegramRemindersSkill() {
+  const srcDir = path.join(process.cwd(), "skills", RAILWAY_TELEGRAM_REMINDERS_SKILL);
+  const destDir = path.join(WORKSPACE_DIR, "skills", RAILWAY_TELEGRAM_REMINDERS_SKILL);
+  const srcSkill = path.join(srcDir, "SKILL.md");
+  if (!fs.existsSync(srcSkill)) {
+    log.warn(
+      "skills",
+      `bundled skill missing: ${srcSkill} (skip copying to workspace)`,
+    );
+    return { updated: false, skipped: true };
+  }
+  const destSkill = path.join(destDir, "SKILL.md");
+  let needCopy = true;
+  if (fs.existsSync(destSkill)) {
+    try {
+      const cur = fs.readFileSync(destSkill, "utf8");
+      if (cur.includes(RAILWAY_TELEGRAM_REMINDERS_SKILL_MARKER)) {
+        needCopy = false;
+      }
+    } catch {
+      /* copy over broken file */
+    }
+  }
+  if (needCopy) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.cpSync(srcDir, destDir, { recursive: true });
+  }
+  return { updated: needCopy, skipped: false };
+}
+
+function readOpenclawConfigParsed() {
+  try {
+    return JSON.parse(fs.readFileSync(configPath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readTelegramBotTokenFromConfig() {
+  const cfg = readOpenclawConfigParsed();
+  const tok = cfg?.channels?.telegram?.botToken;
+  return typeof tok === "string" && tok.trim() ? tok.trim() : null;
+}
+
+function resolveChronoTimezone() {
+  const fromEnv = process.env.OPENCLAW_USER_TIMEZONE?.trim();
+  if (fromEnv) return fromEnv;
+  const cfg = readOpenclawConfigParsed();
+  const tz = cfg?.agents?.defaults?.userTimezone;
+  return typeof tz === "string" && tz.trim() ? tz.trim() : undefined;
+}
+
+function remindersJsonPath() {
+  return path.join(WORKSPACE_DIR, "data", "reminders.json");
+}
+
+function loadRemindersFile() {
+  const p = remindersJsonPath();
+  if (!fs.existsSync(p)) return { reminders: [] };
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    return Array.isArray(data.reminders) ? data : { reminders: [] };
+  } catch {
+    return { reminders: [] };
+  }
+}
+
+function saveRemindersFile(data) {
+  const p = remindersJsonPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
+}
+
+function parseReminderScheduledAt(whenStr, refDate = new Date()) {
+  const tz = resolveChronoTimezone();
+  const opts = { forwardDate: true };
+  if (tz) opts.timezone = tz;
+  try {
+    const parsed = chrono.parseDate(String(whenStr ?? "").trim(), refDate, opts);
+    if (parsed && parsed.getTime() > refDate.getTime()) {
+      return parsed.toISOString();
+    }
+  } catch {}
+  return null;
+}
+
+async function telegramApiSendMessage(botToken, chatId, text) {
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+    }),
+  });
+  const body = await r.text();
+  if (!r.ok) {
+    log.warn("telegram-reminder", `sendMessage failed http=${r.status} body=${body.slice(0, 200)}`);
+    return false;
+  }
+  return true;
+}
+
+function startTelegramFileReminderScheduler() {
+  const pollMs = Number.parseInt(
+    process.env.RAILWAY_REMINDER_POLL_MS ?? "30000",
+    10,
+  );
+  setInterval(() => {
+    if (!isConfigured()) return;
+    const botToken = readTelegramBotTokenFromConfig();
+    if (!botToken) return;
+    const now = Date.now();
+    const data = loadRemindersFile();
+    let changed = false;
+    for (const r of data.reminders || []) {
+      if (r.cancelledAt) continue;
+      if (r.sentAt || r.chatId == null) continue;
+      let scheduled = r.scheduledAt;
+      if (!scheduled && r.when) {
+        const ref = r.created ? new Date(r.created) : new Date();
+        scheduled = parseReminderScheduledAt(r.when, ref);
+        if (scheduled) {
+          r.scheduledAt = scheduled;
+          changed = true;
+        }
+      }
+      if (!scheduled) continue;
+      const at = new Date(scheduled).getTime();
+      if (at > now) continue;
+      const line = `⏰ Reminder: ${r.text}`;
+      telegramApiSendMessage(botToken, r.chatId, line).catch(() => {});
+      r.sentAt = new Date().toISOString();
+      changed = true;
+    }
+    if (changed) saveRemindersFile(data);
+  }, Number.isFinite(pollMs) && pollMs >= 5000 ? pollMs : 30_000);
+}
+
 const REMINDER_DOC_MARKER =
-  "<!-- openclaw-railway-template-reminder-v2 -->";
+  "<!-- openclaw-railway-template-reminder-v4 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -994,7 +1151,7 @@ function reminderWorkspaceDocs() {
     "- Skim MEMORY.md / memory/ for ongoing commitments.",
     "- If nothing needs a user-visible message, reply **HEARTBEAT_OK** only.",
     "",
-    "**Do not** tell the user a timed reminder is “set” unless a **cron** one-shot was created — see **CRON_REMINDERS.md**.",
+    "**Do not** tell the user a timed reminder is “set” unless you followed **`skills/railway-telegram-reminders/SKILL.md`** (Telegram + chatId) or **OpenClaw cron** — see **CRON_REMINDERS.md**.",
     "",
   ].join("\n");
 
@@ -1003,7 +1160,10 @@ function reminderWorkspaceDocs() {
     "",
     "# Exact-time reminders (Telegram / Discord)",
     "",
-    "Chat promises and HEARTBEAT.md **do not** fire at 11:02. Use **OpenClaw cron** so the gateway wakes at the right time and can **announce** to the user.",
+    "Chat promises and HEARTBEAT.md **do not** fire at 11:02.",
+    "",
+    "- **Telegram + natural language** (`in 10 min`, `at 12am`): use workspace skill **`railway_telegram_reminders`** (`skills/railway-telegram-reminders/SKILL.md`) when you have the user’s numeric **chatId** (chrono + `data/reminders.json` in the wrapper).",
+    "- **No chatId** (or non-Telegram): use **OpenClaw cron** with `--channel last` so the gateway wakes and announces.",
     "",
     "## One-shot (wall clock in a timezone)",
     "",
@@ -1042,7 +1202,7 @@ function reminderWorkspaceDocs() {
     "",
     "## Timed reminders",
     "",
-    "When the user asks to be reminded **at a specific time**, create a real **cron** job (see **CRON_REMINDERS.md**). Chat-only replies are not enough.",
+    "When the user asks to be reminded **at a specific time**: follow **`skills/railway-telegram-reminders/SKILL.md`** if you have their Telegram **chatId**; otherwise use **cron** (see **CRON_REMINDERS.md**). Chat-only replies are not enough.",
     "",
   ].join("\n");
 
@@ -1120,7 +1280,29 @@ async function applyReminderAndHeartbeatDefaults() {
 
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    fs.mkdirSync(path.join(WORKSPACE_DIR, "data"), { recursive: true });
     const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
+
+    const skillSync = syncRailwayTelegramRemindersSkill();
+    if (skillSync.skipped) {
+      extra +=
+        "[setup] Bundled skill railway-telegram-reminders not under ./skills — skipped (local dev?).\n";
+    } else if (skillSync.updated) {
+      extra +=
+        "[setup] Installed OpenClaw workspace skill skills/railway-telegram-reminders from template bundle.\n";
+    }
+
+    const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");
+    if (!skillSync.skipped && fs.existsSync(legacyFileReminders)) {
+      try {
+        fs.rmSync(legacyFileReminders);
+        extra +=
+          "[setup] Removed legacy FILE_REMINDERS.md (superseded by skills/railway-telegram-reminders).\n";
+      } catch (err) {
+        extra += `[setup] Could not remove FILE_REMINDERS.md: ${String(err)}\n`;
+      }
+    }
+
     const heartbeatMdPath = path.join(WORKSPACE_DIR, "HEARTBEAT.md");
     if (!fs.existsSync(heartbeatMdPath)) {
       fs.writeFileSync(heartbeatMdPath, heartbeat, "utf8");
@@ -1142,6 +1324,7 @@ async function applyReminderAndHeartbeatDefaults() {
       fs.writeFileSync(memoryPath, memoryStub, "utf8");
       extra += "[setup] Created MEMORY.md stub pointing to cron for timed reminders.\n";
     }
+
   } catch (err) {
     extra += `[setup] reminder workspace docs failed: ${String(err)}\n`;
   }
@@ -1391,6 +1574,107 @@ app.post("/setup/api/reminder-defaults", requireSetupAuth, async (_req, res) => 
   } catch (err) {
     log.error("setup", `reminder-defaults: ${String(err)}`);
     return res.status(500).json({ ok: false, output: String(err) });
+  }
+});
+
+/** Telegram file reminders (chrono); auth with same bearer as the gateway proxy. */
+app.post("/__railway/reminder", requireGatewayBearer, (req, res) => {
+  try {
+    if (!isConfigured()) {
+      return res.status(503).json({ ok: false, error: "not_configured" });
+    }
+    if (!readTelegramBotTokenFromConfig()) {
+      return res.status(400).json({ ok: false, error: "telegram_not_configured" });
+    }
+    const text = String(req.body?.text ?? "").trim();
+    const when = String(req.body?.when ?? "").trim();
+    const chatRaw = req.body?.chatId;
+    if (!text || !when || chatRaw === undefined || chatRaw === null || `${chatRaw}`.trim() === "") {
+      return res.status(400).json({ ok: false, error: "text_when_chatId_required" });
+    }
+    const chatId =
+      typeof chatRaw === "number" ? chatRaw : Number(String(chatRaw).trim());
+    if (!Number.isFinite(chatId)) {
+      return res.status(400).json({ ok: false, error: "invalid_chatId" });
+    }
+    const ref = new Date();
+    const scheduledAt = parseReminderScheduledAt(when, ref);
+    if (!scheduledAt) {
+      return res.status(400).json({
+        ok: false,
+        error: "could_not_parse_when",
+        hint: "Try relative times (e.g. in 10 min) or set OPENCLAW_USER_TIMEZONE for midnight / local wall clock.",
+      });
+    }
+    const data = loadRemindersFile();
+    const id = crypto.randomUUID();
+    data.reminders.push({
+      id,
+      text,
+      when,
+      scheduledAt,
+      chatId,
+      created: ref.toISOString(),
+    });
+    saveRemindersFile(data);
+    return res.json({
+      ok: true,
+      id,
+      text,
+      when,
+      scheduledAt,
+    });
+  } catch (err) {
+    log.error("reminder-api", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+app.post("/__railway/reminder/cancel", requireGatewayBearer, (req, res) => {
+  try {
+    if (!isConfigured()) {
+      return res.status(503).json({ ok: false, error: "not_configured" });
+    }
+    const id = req.body?.id != null ? String(req.body.id).trim() : "";
+    const textSnip = req.body?.text != null ? String(req.body.text).trim() : "";
+    const chatRaw = req.body?.chatId;
+    const chatId =
+      chatRaw === undefined || chatRaw === null || `${chatRaw}`.trim() === ""
+        ? null
+        : typeof chatRaw === "number"
+          ? chatRaw
+          : Number(String(chatRaw).trim());
+
+    if (!id && !textSnip) {
+      return res.status(400).json({ ok: false, error: "id_or_text_required" });
+    }
+    if (textSnip && (chatId === null || !Number.isFinite(chatId))) {
+      return res.status(400).json({ ok: false, error: "text_cancel_requires_chatId" });
+    }
+
+    const data = loadRemindersFile();
+    let cancelled = false;
+    for (const r of data.reminders || []) {
+      if (r.cancelledAt || r.sentAt) continue;
+      if (id) {
+        if (r.id !== id) continue;
+        if (chatId != null && Number.isFinite(chatId) && r.chatId !== chatId) continue;
+      } else {
+        if (r.chatId !== chatId) continue;
+        if (!String(r.text || "").toLowerCase().includes(textSnip.toLowerCase())) continue;
+      }
+      r.cancelledAt = new Date().toISOString();
+      cancelled = true;
+      break;
+    }
+    if (!cancelled) {
+      return res.status(404).json({ ok: false, error: "not_found" });
+    }
+    saveRemindersFile(data);
+    return res.json({ ok: true });
+  } catch (err) {
+    log.error("reminder-cancel", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
@@ -1752,6 +2036,7 @@ app.use(async (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
+  startTelegramFileReminderScheduler();
   log.info("wrapper", `listening on port ${PORT}`);
   log.info("wrapper", `setup wizard: http://localhost:${PORT}/setup`);
   log.info("wrapper", `web TUI: ${ENABLE_WEB_TUI ? "enabled" : "disabled"}`);

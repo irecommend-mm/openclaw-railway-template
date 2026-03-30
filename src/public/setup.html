@@ -518,7 +518,7 @@
               </div>
               <span class="action-title">Reminder / heartbeat fix</span>
             </div>
-            <p class="action-desc">Sets heartbeat + timezone, writes HEARTBEAT.md / CRON_REMINDERS.md so timed reminders use <code class="code-inline">openclaw cron add</code> (chat alone cannot fire at 11:02). Use after upgrading the template.</p>
+            <p class="action-desc">Sets heartbeat + timezone, refreshes workspace docs, and installs the OpenClaw skill <code class="code-inline">skills/railway-telegram-reminders</code> (Telegram chrono reminders) plus <code class="code-inline">openclaw cron add</code> docs. Use after upgrading the template.</p>
             <button @click="applyReminderDefaults()" :disabled="loading" class="action-btn">
               Apply reminder defaults
             </button>
