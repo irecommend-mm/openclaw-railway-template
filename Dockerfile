@@ -9,11 +9,19 @@ RUN apt-get update \
     procps \
     python3 \
     build-essential \
-    golang-go \
     zip \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g openclaw@2026.3.28 clawhub@latest
+
+# Install a modern Go toolchain (Debian bookworm golang-go is too old for
+# modules that use patch-style go directives like `go 1.25.5`).
+ARG GO_VERSION=1.25.1
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz \
+  && rm -rf /usr/local/go \
+  && tar -C /usr/local -xzf /tmp/go.tgz \
+  && rm -f /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # meta-cli (Facebook Pages CLI)
 RUN go install github.com/ygncode/meta-cli/cmd/meta@latest \
