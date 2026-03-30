@@ -981,7 +981,71 @@ function validatePayload(payload) {
   return null;
 }
 
-/** Heartbeat + timezone + HEARTBEAT.md so reminders are not “forgotten” (OpenClaw default heartbeat.target is none). */
+const REMINDER_DOC_MARKER =
+  "<!-- openclaw-railway-template-reminder-v1 -->";
+
+function reminderWorkspaceDocs() {
+  const heartbeat = [
+    "# Heartbeat checklist",
+    "",
+    "Heartbeats run every N minutes (e.g. 30m). They are **not** exact wall-clock alarms.",
+    "",
+    "- Optional: check pending scheduled jobs if your tools expose `openclaw cron list` (exact-time reminders live there, not in this file alone).",
+    "- Skim MEMORY.md / memory/ for ongoing commitments.",
+    "- If nothing needs a user-visible message, reply **HEARTBEAT_OK** only.",
+    "",
+    "**Do not** tell the user a timed reminder is “set” unless a **cron** one-shot was created — see **CRON_REMINDERS.md**.",
+    "",
+  ].join("\n");
+
+  const cronReminders = [
+    REMINDER_DOC_MARKER,
+    "",
+    "# Exact-time reminders (Telegram / Discord)",
+    "",
+    "Chat promises and HEARTBEAT.md **do not** fire at 11:02. Use **OpenClaw cron** so the gateway wakes at the right time and can **announce** to the user.",
+    "",
+    "## One-shot (wall clock in a timezone)",
+    "",
+    "Replace the name, datetime, message, and timezone. `--channel last` usually delivers to the last DM (e.g. Telegram).",
+    "",
+    "```bash",
+    'openclaw cron add \\',
+    '  --name "Take a rest" \\',
+    '  --at "2026-03-30T11:02:00" \\',
+    '  --tz "Asia/Yangon" \\',
+    "  --session isolated \\",
+    '  --message "Reminder: take a rest." \\',
+    "  --announce \\",
+    "  --channel last \\",
+    "  --wake now \\",
+    "  --delete-after-run",
+    "```",
+    "",
+    "Relative example: `--at \"15m\"` with `--tz \"Asia/Yangon\"` if the user said “in 15 minutes”.",
+    "",
+    "## Rules",
+    "",
+    "- If `cron add` fails (or “Edit failed”), **say so** — do not claim the reminder is scheduled.",
+    "- Confirm using the job output / `openclaw cron list`.",
+    "",
+  ].join("\n");
+
+  const memoryStub = [
+    "# Memory",
+    "",
+    REMINDER_DOC_MARKER,
+    "",
+    "## Timed reminders",
+    "",
+    "When the user asks to be reminded **at a specific time**, create a real **cron** job (see **CRON_REMINDERS.md**). Chat-only replies are not enough.",
+    "",
+  ].join("\n");
+
+  return { heartbeat, cronReminders, memoryStub };
+}
+
+/** Heartbeat + timezone + workspace docs so timed reminders use gateway cron, not chat-only promises. */
 async function applyReminderAndHeartbeatDefaults() {
   let extra = "";
   if (OPENCLAW_HEARTBEAT_TARGET && OPENCLAW_HEARTBEAT_TARGET !== "skip") {
@@ -1028,25 +1092,30 @@ async function applyReminderAndHeartbeatDefaults() {
 
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
     const heartbeatMdPath = path.join(WORKSPACE_DIR, "HEARTBEAT.md");
     if (!fs.existsSync(heartbeatMdPath)) {
-      fs.writeFileSync(
-        heartbeatMdPath,
-        [
-          "# Heartbeat checklist",
-          "",
-          "- Check MEMORY.md (and daily files under memory/) for commitments and due times.",
-          "- If the user asked for a reminder, ensure it is on disk (MEMORY.md with clear date/time) or scheduled via OpenClaw cron — chat-only promises are forgotten after compaction.",
-          "- When nothing needs a message, acknowledge with HEARTBEAT_OK only.",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
+      fs.writeFileSync(heartbeatMdPath, heartbeat, "utf8");
+      extra += "[setup] Created HEARTBEAT.md (heartbeat vs exact-time reminders).\n";
+    }
+
+    const cronPath = path.join(WORKSPACE_DIR, "CRON_REMINDERS.md");
+    const cronNeedsWrite =
+      !fs.existsSync(cronPath) ||
+      !fs.readFileSync(cronPath, "utf8").includes(REMINDER_DOC_MARKER);
+    if (cronNeedsWrite) {
+      fs.writeFileSync(cronPath, cronReminders, "utf8");
       extra +=
-        "[setup] Created HEARTBEAT.md starter so heartbeats scan for reminders.\n";
+        "[setup] Wrote CRON_REMINDERS.md — agents should use `openclaw cron add` for clock-time reminders.\n";
+    }
+
+    const memoryPath = path.join(WORKSPACE_DIR, "MEMORY.md");
+    if (!fs.existsSync(memoryPath)) {
+      fs.writeFileSync(memoryPath, memoryStub, "utf8");
+      extra += "[setup] Created MEMORY.md stub pointing to cron for timed reminders.\n";
     }
   } catch (err) {
-    extra += `[setup] HEARTBEAT.md seed failed: ${String(err)}\n`;
+    extra += `[setup] reminder workspace docs failed: ${String(err)}\n`;
   }
 
   return extra;
