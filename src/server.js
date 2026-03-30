@@ -1028,7 +1028,7 @@ function syncRailwayTelegramRemindersSkill() {
 }
 
 const META_CLI_FB_SKILL = "meta-cli-fb";
-const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v1 -->";
+const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v2 -->";
 
 function syncMetaCliFbSkill() {
   const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);

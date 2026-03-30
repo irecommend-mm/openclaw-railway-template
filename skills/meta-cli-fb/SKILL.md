@@ -11,7 +11,7 @@ metadata:
       bins: ["meta-cli"]
 ---
 
-<!-- meta-cli-fb-skill v1 -->
+<!-- meta-cli-fb-skill v2 -->
 
 # meta-cli Facebook Page (manual mode)
 
@@ -62,6 +62,18 @@ meta-cli pages list --json
 
 ```bash
 meta-cli pages set-default <PAGE_ID>
+```
+
+## Tool routing safety (important)
+
+- This skill is **CLI-only**. Use shell commands that start with `meta-cli ...`.
+- Do **not** call generic file tools like `read`/`write` for Facebook operations.
+- If you need context, call:
+
+```bash
+meta-cli messenger history --psid <PSID> --limit 30 --json
+meta-cli comment list <POST_ID> --limit 50 --json
+meta-cli post list --limit 10 --json
 ```
 
 ## Knowledge base (FAQ) workflow
