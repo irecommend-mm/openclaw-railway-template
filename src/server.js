@@ -982,7 +982,7 @@ function validatePayload(payload) {
 }
 
 const REMINDER_DOC_MARKER =
-  "<!-- openclaw-railway-template-reminder-v1 -->";
+  "<!-- openclaw-railway-template-reminder-v2 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -1029,6 +1029,10 @@ function reminderWorkspaceDocs() {
     "- If `cron add` fails (or “Edit failed”), **say so** — do not claim the reminder is scheduled.",
     "- Confirm using the job output / `openclaw cron list`.",
     "",
+    "## Pairing / “gateway locked” errors",
+    "",
+    "If CLI says device pairing is required, pass the gateway token: `--token \"$OPENCLAW_GATEWAY_TOKEN\"` (injected in this Railway container), or ensure config has `gateway.controlUi.dangerouslyDisableDeviceAuth=true` (this template sets that on setup / **Apply reminder defaults**).",
+    "",
   ].join("\n");
 
   const memoryStub = [
@@ -1045,9 +1049,33 @@ function reminderWorkspaceDocs() {
   return { heartbeat, cronReminders, memoryStub };
 }
 
+/**
+ * Agent-spawned `openclaw cron` connects to the loopback gateway; without this,
+ * OpenClaw may require Control UI device pairing and cron setup fails on Railway.
+ * Severe security downgrade vs stock OpenClaw; this template is already public + token-auth. Opt out: OPENCLAW_STRICT_DEVICE_AUTH=1
+ */
+async function applyHeadlessGatewayDeviceAuthBypass() {
+  let extra = "";
+  if (process.env.OPENCLAW_STRICT_DEVICE_AUTH?.trim() === "1") {
+    return extra;
+  }
+  const r = await runCmd(
+    OPENCLAW_NODE,
+    clawArgs([
+      "config",
+      "set",
+      "gateway.controlUi.dangerouslyDisableDeviceAuth",
+      "true",
+    ]),
+  );
+  extra += `[config] migrate headless cron/CLI: gateway.controlUi.dangerouslyDisableDeviceAuth=true exit=${r.code}\n${r.output || ""}`;
+  return extra;
+}
+
 /** Heartbeat + timezone + workspace docs so timed reminders use gateway cron, not chat-only promises. */
 async function applyReminderAndHeartbeatDefaults() {
   let extra = "";
+  extra += await applyHeadlessGatewayDeviceAuthBypass();
   if (OPENCLAW_HEARTBEAT_TARGET && OPENCLAW_HEARTBEAT_TARGET !== "skip") {
     extra += `[setup] Heartbeat delivery target=${OPENCLAW_HEARTBEAT_TARGET} (alerts go to your last chat, e.g. Telegram)...\n`;
     const hbT = await runCmd(
@@ -1161,6 +1189,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         ]),
       );
       extra += `[config] gateway.controlUi.allowInsecureAuth=true exit=${allowInsecureResult.code}\n`;
+
+      extra += await applyHeadlessGatewayDeviceAuthBypass();
 
       const tokenResult = await runCmd(
         OPENCLAW_NODE,
