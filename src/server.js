@@ -1027,6 +1027,34 @@ function syncRailwayTelegramRemindersSkill() {
   return { updated: needCopy, skipped: false };
 }
 
+const META_CLI_FB_SKILL = "meta-cli-fb";
+const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v1 -->";
+
+function syncMetaCliFbSkill() {
+  const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);
+  const destDir = path.join(WORKSPACE_DIR, "skills", META_CLI_FB_SKILL);
+  const srcSkill = path.join(srcDir, "SKILL.md");
+  if (!fs.existsSync(srcSkill)) {
+    log.warn("skills", `bundled skill missing: ${srcSkill} (skip copying to workspace)`);
+    return { updated: false, skipped: true };
+  }
+  const destSkill = path.join(destDir, "SKILL.md");
+  let needCopy = true;
+  if (fs.existsSync(destSkill)) {
+    try {
+      const cur = fs.readFileSync(destSkill, "utf8");
+      if (cur.includes(META_CLI_FB_SKILL_MARKER)) {
+        needCopy = false;
+      }
+    } catch {}
+  }
+  if (needCopy) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.cpSync(srcDir, destDir, { recursive: true });
+  }
+  return { updated: needCopy, skipped: false };
+}
+
 function readOpenclawConfigParsed() {
   try {
     return JSON.parse(fs.readFileSync(configPath(), "utf8"));
@@ -1340,6 +1368,24 @@ async function applyReminderAndHeartbeatDefaults() {
     }
     if (!skillSync.skipped) {
       extra += `[setup] Skill SKILL.md on disk: ${fs.existsSync(skillDestSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
+    }
+
+    const metaSkillSync = syncMetaCliFbSkill();
+    const metaSkillMd = path.join(
+      WORKSPACE_DIR,
+      "skills",
+      META_CLI_FB_SKILL,
+      "SKILL.md",
+    );
+    if (metaSkillSync.skipped) {
+      extra += "[setup] Bundled skill meta-cli-fb not under ./skills — skipped.\n";
+    } else if (metaSkillSync.updated) {
+      extra += "[setup] Installed OpenClaw workspace skill skills/meta-cli-fb from template bundle.\n";
+    } else {
+      extra += `[setup] Skill meta-cli-fb already synced; expect SKILL.md at ${metaSkillMd}\n`;
+    }
+    if (!metaSkillSync.skipped) {
+      extra += `[setup] meta-cli-fb SKILL.md on disk: ${fs.existsSync(metaSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
     }
 
     const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");

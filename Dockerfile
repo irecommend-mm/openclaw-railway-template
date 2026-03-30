@@ -9,10 +9,15 @@ RUN apt-get update \
     procps \
     python3 \
     build-essential \
+    golang-go \
     zip \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g openclaw@2026.3.28 clawhub@latest
+
+# meta-cli (Facebook Pages CLI)
+RUN go install github.com/ygncode/meta-cli/cmd/meta@latest \
+  && ln -s /root/go/bin/meta /usr/local/bin/meta-cli
 
 WORKDIR /app
 
