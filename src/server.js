@@ -1284,12 +1284,23 @@ async function applyReminderAndHeartbeatDefaults() {
     const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
 
     const skillSync = syncRailwayTelegramRemindersSkill();
+    const skillDestSkillMd = path.join(
+      WORKSPACE_DIR,
+      "skills",
+      RAILWAY_TELEGRAM_REMINDERS_SKILL,
+      "SKILL.md",
+    );
     if (skillSync.skipped) {
       extra +=
         "[setup] Bundled skill railway-telegram-reminders not under ./skills — skipped (local dev?).\n";
     } else if (skillSync.updated) {
       extra +=
         "[setup] Installed OpenClaw workspace skill skills/railway-telegram-reminders from template bundle.\n";
+    } else {
+      extra += `[setup] Skill railway-telegram-reminders already synced; expect SKILL.md at ${skillDestSkillMd}\n`;
+    }
+    if (!skillSync.skipped) {
+      extra += `[setup] Skill SKILL.md on disk: ${fs.existsSync(skillDestSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
     }
 
     const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");
