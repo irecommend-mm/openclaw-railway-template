@@ -25,7 +25,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 
 # meta-cli (Facebook Pages CLI)
 RUN go install github.com/ygncode/meta-cli/cmd/meta@latest \
-  && ln -s /root/go/bin/meta /usr/local/bin/meta-cli
+  && install -m 0755 /root/go/bin/meta /usr/local/bin/meta-cli
 
 WORKDIR /app
 
