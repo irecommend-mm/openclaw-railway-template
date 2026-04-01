@@ -72,4 +72,4 @@ gog gmail reply --message-id <MESSAGE_ID> --body "Draft reply text"
 - For sending/replying, show draft first and ask for confirmation unless user explicitly says "send now".
 - If command fails, report the exact failure and next step.
 - Do not ask the user to change `HOME`, edit Dockerfile, or do runtime infra hacks for gog.
-- This template already persists gog config via `/data/.config/gog`; focus on `gog auth login` and Gmail commands only.
+- This template already persists gog config via `/data/.config/gogcli`; focus on `gog auth login` and Gmail commands only.
