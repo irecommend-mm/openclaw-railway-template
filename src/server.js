@@ -1029,6 +1029,8 @@ function syncRailwayTelegramRemindersSkill() {
 
 const META_CLI_FB_SKILL = "meta-cli-fb";
 const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v2 -->";
+const GOG_DOCS_SKILL = "gog-docs";
+const GOG_DOCS_SKILL_MARKER = "<!-- gog-docs-skill v1 -->";
 
 function syncMetaCliFbSkill() {
   const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);
@@ -1044,6 +1046,31 @@ function syncMetaCliFbSkill() {
     try {
       const cur = fs.readFileSync(destSkill, "utf8");
       if (cur.includes(META_CLI_FB_SKILL_MARKER)) {
+        needCopy = false;
+      }
+    } catch {}
+  }
+  if (needCopy) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.cpSync(srcDir, destDir, { recursive: true });
+  }
+  return { updated: needCopy, skipped: false };
+}
+
+function syncGogDocsSkill() {
+  const srcDir = path.join(process.cwd(), "skills", GOG_DOCS_SKILL);
+  const destDir = path.join(WORKSPACE_DIR, "skills", GOG_DOCS_SKILL);
+  const srcSkill = path.join(srcDir, "SKILL.md");
+  if (!fs.existsSync(srcSkill)) {
+    log.warn("skills", `bundled skill missing: ${srcSkill} (skip copying to workspace)`);
+    return { updated: false, skipped: true };
+  }
+  const destSkill = path.join(destDir, "SKILL.md");
+  let needCopy = true;
+  if (fs.existsSync(destSkill)) {
+    try {
+      const cur = fs.readFileSync(destSkill, "utf8");
+      if (cur.includes(GOG_DOCS_SKILL_MARKER)) {
         needCopy = false;
       }
     } catch {}
@@ -1386,6 +1413,19 @@ async function applyReminderAndHeartbeatDefaults() {
     }
     if (!metaSkillSync.skipped) {
       extra += `[setup] meta-cli-fb SKILL.md on disk: ${fs.existsSync(metaSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
+    }
+
+    const gogSkillSync = syncGogDocsSkill();
+    const gogSkillMd = path.join(WORKSPACE_DIR, "skills", GOG_DOCS_SKILL, "SKILL.md");
+    if (gogSkillSync.skipped) {
+      extra += "[setup] Bundled skill gog-docs not under ./skills — skipped.\n";
+    } else if (gogSkillSync.updated) {
+      extra += "[setup] Installed OpenClaw workspace skill skills/gog-docs from template bundle.\n";
+    } else {
+      extra += `[setup] Skill gog-docs already synced; expect SKILL.md at ${gogSkillMd}\n`;
+    }
+    if (!gogSkillSync.skipped) {
+      extra += `[setup] gog-docs SKILL.md on disk: ${fs.existsSync(gogSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
     }
 
     const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");
