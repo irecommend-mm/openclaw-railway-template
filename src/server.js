@@ -1029,8 +1029,6 @@ function syncRailwayTelegramRemindersSkill() {
 
 const META_CLI_FB_SKILL = "meta-cli-fb";
 const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v2 -->";
-const GOG_GMAIL_SKILL = "gog-gmail";
-const GOG_GMAIL_SKILL_MARKER = "<!-- gog-gmail-skill v1 -->";
 
 function syncMetaCliFbSkill() {
   const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);
@@ -1046,31 +1044,6 @@ function syncMetaCliFbSkill() {
     try {
       const cur = fs.readFileSync(destSkill, "utf8");
       if (cur.includes(META_CLI_FB_SKILL_MARKER)) {
-        needCopy = false;
-      }
-    } catch {}
-  }
-  if (needCopy) {
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.cpSync(srcDir, destDir, { recursive: true });
-  }
-  return { updated: needCopy, skipped: false };
-}
-
-function syncGogGmailSkill() {
-  const srcDir = path.join(process.cwd(), "skills", GOG_GMAIL_SKILL);
-  const destDir = path.join(WORKSPACE_DIR, "skills", GOG_GMAIL_SKILL);
-  const srcSkill = path.join(srcDir, "SKILL.md");
-  if (!fs.existsSync(srcSkill)) {
-    log.warn("skills", `bundled skill missing: ${srcSkill} (skip copying to workspace)`);
-    return { updated: false, skipped: true };
-  }
-  const destSkill = path.join(destDir, "SKILL.md");
-  let needCopy = true;
-  if (fs.existsSync(destSkill)) {
-    try {
-      const cur = fs.readFileSync(destSkill, "utf8");
-      if (cur.includes(GOG_GMAIL_SKILL_MARKER)) {
         needCopy = false;
       }
     } catch {}
@@ -1234,8 +1207,6 @@ function startTelegramFileReminderScheduler() {
 
 const REMINDER_DOC_MARKER =
   "<!-- openclaw-railway-template-reminder-v4 -->";
-const TOOL_ROUTING_DOC_MARKER =
-  "<!-- openclaw-railway-template-tool-routing-v1 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -1302,21 +1273,7 @@ function reminderWorkspaceDocs() {
     "",
   ].join("\n");
 
-  const toolRouting = [
-    TOOL_ROUTING_DOC_MARKER,
-    "",
-    "# Tool routing guardrails (Telegram bot)",
-    "",
-    "- For Facebook tasks, use **`skills/meta-cli-fb/SKILL.md`** and commands that start with `meta-cli ...` only.",
-    "- For Gmail tasks, use **`skills/gog-gmail/SKILL.md`** and commands that start with `gog ...` only.",
-    "- Do not propose unrelated stacks (e.g. `google-api-python-client`, Python migrations, or random package installs) for gog/meta tasks.",
-    "- Do not ask the user to edit Dockerfile, change HOME, or perform infra changes during normal chat actions.",
-    "- If auth is missing, ask only for the minimal login command (`gog auth login` / `meta-cli auth login ...`) and then re-check with CLI status commands.",
-    "- Do not add off-topic social chatter (sleep/tomorrow reminders) when user asks for technical execution.",
-    "",
-  ].join("\n");
-
-  return { heartbeat, cronReminders, memoryStub, toolRouting };
+  return { heartbeat, cronReminders, memoryStub };
 }
 
 /**
@@ -1391,7 +1348,7 @@ async function applyReminderAndHeartbeatDefaults() {
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
     fs.mkdirSync(path.join(WORKSPACE_DIR, "data"), { recursive: true });
-    const { heartbeat, cronReminders, memoryStub, toolRouting } = reminderWorkspaceDocs();
+    const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
 
     const skillSync = syncRailwayTelegramRemindersSkill();
     const skillDestSkillMd = path.join(
@@ -1431,19 +1388,6 @@ async function applyReminderAndHeartbeatDefaults() {
       extra += `[setup] meta-cli-fb SKILL.md on disk: ${fs.existsSync(metaSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
     }
 
-    const gogSkillSync = syncGogGmailSkill();
-    const gogSkillMd = path.join(WORKSPACE_DIR, "skills", GOG_GMAIL_SKILL, "SKILL.md");
-    if (gogSkillSync.skipped) {
-      extra += "[setup] Bundled skill gog-gmail not under ./skills — skipped.\n";
-    } else if (gogSkillSync.updated) {
-      extra += "[setup] Installed OpenClaw workspace skill skills/gog-gmail from template bundle.\n";
-    } else {
-      extra += `[setup] Skill gog-gmail already synced; expect SKILL.md at ${gogSkillMd}\n`;
-    }
-    if (!gogSkillSync.skipped) {
-      extra += `[setup] gog-gmail SKILL.md on disk: ${fs.existsSync(gogSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
-    }
-
     const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");
     if (!skillSync.skipped && fs.existsSync(legacyFileReminders)) {
       try {
@@ -1476,18 +1420,6 @@ async function applyReminderAndHeartbeatDefaults() {
       fs.writeFileSync(memoryPath, memoryStub, "utf8");
       extra += "[setup] Created MEMORY.md stub pointing to cron for timed reminders.\n";
     }
-    try {
-      let memoryCur = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf8") : "";
-      if (!memoryCur.includes(TOOL_ROUTING_DOC_MARKER)) {
-        const sep = memoryCur.trim().length ? "\n\n" : "";
-        memoryCur += `${sep}${toolRouting}`;
-        fs.writeFileSync(memoryPath, memoryCur, "utf8");
-        extra += "[setup] Appended tool routing guardrails to MEMORY.md (meta-cli/gog CLI-only).\n";
-      }
-    } catch (err) {
-      extra += `[setup] Could not update MEMORY.md tool routing guardrails: ${String(err)}\n`;
-    }
-
   } catch (err) {
     extra += `[setup] reminder workspace docs failed: ${String(err)}\n`;
   }
