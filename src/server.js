@@ -37,6 +37,24 @@ const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
+// Accept both GOOGLE_* and legacy GMAIL_* env names.
+// Normalize to GOOGLE_* so downstream code can use one set consistently.
+function normalizeGoogleEnvNames() {
+  const map = [
+    ["GOOGLE_CLIENT_ID", "GMAIL_CLIENT_ID"],
+    ["GOOGLE_CLIENT_SECRET", "GMAIL_CLIENT_SECRET"],
+    ["GOOGLE_REFRESH_TOKEN", "GMAIL_REFRESH_TOKEN"],
+    ["GOOGLE_ACCOUNT_EMAIL", "GMAIL_USER"],
+  ];
+  for (const [target, legacy] of map) {
+    const targetVal = process.env[target]?.trim();
+    if (targetVal) continue;
+    const legacyVal = process.env[legacy]?.trim();
+    if (legacyVal) process.env[target] = legacyVal;
+  }
+}
+normalizeGoogleEnvNames();
+
 const LOG_FILE = path.join(STATE_DIR, "server.log");
 const LOG_RING_BUFFER_MAX = 1000;
 const MAX_LOG_FILE_SIZE = 5 * 1024 * 1024;
