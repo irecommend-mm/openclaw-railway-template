@@ -1234,6 +1234,8 @@ function startTelegramFileReminderScheduler() {
 
 const REMINDER_DOC_MARKER =
   "<!-- openclaw-railway-template-reminder-v4 -->";
+const TOOL_ROUTING_DOC_MARKER =
+  "<!-- openclaw-railway-template-tool-routing-v1 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -1300,7 +1302,21 @@ function reminderWorkspaceDocs() {
     "",
   ].join("\n");
 
-  return { heartbeat, cronReminders, memoryStub };
+  const toolRouting = [
+    TOOL_ROUTING_DOC_MARKER,
+    "",
+    "# Tool routing guardrails (Telegram bot)",
+    "",
+    "- For Facebook tasks, use **`skills/meta-cli-fb/SKILL.md`** and commands that start with `meta-cli ...` only.",
+    "- For Gmail tasks, use **`skills/gog-gmail/SKILL.md`** and commands that start with `gog ...` only.",
+    "- Do not propose unrelated stacks (e.g. `google-api-python-client`, Python migrations, or random package installs) for gog/meta tasks.",
+    "- Do not ask the user to edit Dockerfile, change HOME, or perform infra changes during normal chat actions.",
+    "- If auth is missing, ask only for the minimal login command (`gog auth login` / `meta-cli auth login ...`) and then re-check with CLI status commands.",
+    "- Do not add off-topic social chatter (sleep/tomorrow reminders) when user asks for technical execution.",
+    "",
+  ].join("\n");
+
+  return { heartbeat, cronReminders, memoryStub, toolRouting };
 }
 
 /**
@@ -1375,7 +1391,7 @@ async function applyReminderAndHeartbeatDefaults() {
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
     fs.mkdirSync(path.join(WORKSPACE_DIR, "data"), { recursive: true });
-    const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
+    const { heartbeat, cronReminders, memoryStub, toolRouting } = reminderWorkspaceDocs();
 
     const skillSync = syncRailwayTelegramRemindersSkill();
     const skillDestSkillMd = path.join(
@@ -1459,6 +1475,17 @@ async function applyReminderAndHeartbeatDefaults() {
     if (!fs.existsSync(memoryPath)) {
       fs.writeFileSync(memoryPath, memoryStub, "utf8");
       extra += "[setup] Created MEMORY.md stub pointing to cron for timed reminders.\n";
+    }
+    try {
+      let memoryCur = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf8") : "";
+      if (!memoryCur.includes(TOOL_ROUTING_DOC_MARKER)) {
+        const sep = memoryCur.trim().length ? "\n\n" : "";
+        memoryCur += `${sep}${toolRouting}`;
+        fs.writeFileSync(memoryPath, memoryCur, "utf8");
+        extra += "[setup] Appended tool routing guardrails to MEMORY.md (meta-cli/gog CLI-only).\n";
+      }
+    } catch (err) {
+      extra += `[setup] Could not update MEMORY.md tool routing guardrails: ${String(err)}\n`;
     }
 
   } catch (err) {
