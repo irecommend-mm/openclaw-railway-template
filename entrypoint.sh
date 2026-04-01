@@ -12,6 +12,14 @@ mkdir -p /home/openclaw
 chown -R openclaw:openclaw /home/openclaw
 ln -sfn /data/.meta-cli /home/openclaw/.meta-cli
 
+# Persist gog config via XDG config path on Railway volume.
+# Keep HOME as /home/openclaw; only mirror ~/.config/gog to /data.
+mkdir -p /data/.config/gog
+chown -R openclaw:openclaw /data/.config
+mkdir -p /home/openclaw/.config
+chown -R openclaw:openclaw /home/openclaw/.config
+ln -sfn /data/.config/gog /home/openclaw/.config/gog
+
 # Homebrew in this image is large (often 500MB+). Copying it onto a small Railway
 # volume fills the disk and breaks mkdir for /data/.openclaw (ENOSPC). Keep brew in
 # the image on Railway; persist only OpenClaw under /data.
