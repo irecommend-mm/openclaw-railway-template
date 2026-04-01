@@ -38,17 +38,13 @@ COPY --chmod=755 entrypoint.sh ./entrypoint.sh
 
 RUN useradd -m -s /bin/bash openclaw \
   && chown -R openclaw:openclaw /app \
-  && mkdir -p /data && chown openclaw:openclaw /data \
-  && mkdir -p /home/linuxbrew/.linuxbrew && chown -R openclaw:openclaw /home/linuxbrew
+  && mkdir -p /data && chown openclaw:openclaw /data
 
-USER openclaw
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-RUN /home/linuxbrew/.linuxbrew/bin/brew install steipete/tap/gogcli
-
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
-ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew"
-ENV HOMEBREW_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
-ENV HOMEBREW_REPOSITORY="/home/linuxbrew/.linuxbrew/Homebrew"
+# Install gogcli binary directly
+RUN curl -fsSL https://github.com/steipete/gogcli/releases/download/latest/gogcli-linux-amd64 -o /tmp/gogcli \
+  && chmod +x /tmp/gogcli \
+  && install -m 0755 /tmp/gogcli /usr/local/bin/gog \
+  && rm -f /tmp/gogcli
 
 ENV PORT=8080
 ENV OPENCLAW_ENTRY=/usr/local/lib/node_modules/openclaw/dist/entry.js
