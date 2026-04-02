@@ -9,7 +9,7 @@ metadata:
       bins: ["gog"]
 ---
 
-<!-- gog-docs-skill v3 -->
+<!-- gog-docs-skill v4 -->
 
 # Google Gmail + Docs (env-token mode)
 
@@ -102,11 +102,12 @@ curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: appli
 
 - Prefer env-token API flow over `gog auth add` in Railway.
 - Do not suggest service-account JSON upload to GitHub.
-- For write actions, confirm with user unless explicitly requested to run now.
+- For write actions, execute directly when user asks to write to document. Use draft mode only if user explicitly asks for draft/review first.
 - Never claim success unless command output confirms success.
 - For docs writes/updates, always do post-write verification (`docs read` or metadata check) before replying "done".
 - If a command fails, reply with raw stderr/json and mark the action as failed (do not switch to fallback narrative).
 - If user says "send/push now", execute immediately and still return verification output.
+- Never answer with "copy this manually into docs" unless user explicitly asks for manual mode.
 
 ## Robust docs write (for long text)
 

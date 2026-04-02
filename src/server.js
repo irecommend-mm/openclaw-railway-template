@@ -1048,7 +1048,7 @@ function syncRailwayTelegramRemindersSkill() {
 const META_CLI_FB_SKILL = "meta-cli-fb";
 const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v2 -->";
 const GOG_DOCS_SKILL = "gog-docs";
-const GOG_DOCS_SKILL_MARKER = "<!-- gog-docs-skill v3 -->";
+const GOG_DOCS_SKILL_MARKER = "<!-- gog-docs-skill v4 -->";
 
 function syncMetaCliFbSkill() {
   const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);
@@ -1252,6 +1252,8 @@ function startTelegramFileReminderScheduler() {
 
 const REMINDER_DOC_MARKER =
   "<!-- openclaw-railway-template-reminder-v4 -->";
+const GOOGLE_BOT_ROUTING_MARKER =
+  "<!-- openclaw-railway-template-google-routing-v1 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -1318,7 +1320,19 @@ function reminderWorkspaceDocs() {
     "",
   ].join("\n");
 
-  return { heartbeat, cronReminders, memoryStub };
+  const googleBotRouting = [
+    GOOGLE_BOT_ROUTING_MARKER,
+    "",
+    "## Google bot routing (must-follow)",
+    "",
+    "- For user requests like `google gmail latest 3`, `google docs read <id>`, or `write this to document`, execute env-token API commands directly using `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, and `GMAIL_USER`.",
+    "- Do not switch to fallback chat drafting unless user explicitly asks for draft mode.",
+    "- Do not suggest Dockerfile edits, service-account uploads, or re-auth narratives during normal command execution when env-token mode is available.",
+    "- Never claim document write success unless API output confirms success and post-write verification succeeds.",
+    "",
+  ].join("\n");
+
+  return { heartbeat, cronReminders, memoryStub, googleBotRouting };
 }
 
 /**
@@ -1393,7 +1407,7 @@ async function applyReminderAndHeartbeatDefaults() {
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
     fs.mkdirSync(path.join(WORKSPACE_DIR, "data"), { recursive: true });
-    const { heartbeat, cronReminders, memoryStub } = reminderWorkspaceDocs();
+    const { heartbeat, cronReminders, memoryStub, googleBotRouting } = reminderWorkspaceDocs();
 
     const skillSync = syncRailwayTelegramRemindersSkill();
     const skillDestSkillMd = path.join(
@@ -1477,6 +1491,17 @@ async function applyReminderAndHeartbeatDefaults() {
     if (!fs.existsSync(memoryPath)) {
       fs.writeFileSync(memoryPath, memoryStub, "utf8");
       extra += "[setup] Created MEMORY.md stub pointing to cron for timed reminders.\n";
+    }
+    try {
+      let cur = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf8") : "";
+      if (!cur.includes(GOOGLE_BOT_ROUTING_MARKER)) {
+        const sep = cur.trim().length ? "\n\n" : "";
+        cur += `${sep}${googleBotRouting}`;
+        fs.writeFileSync(memoryPath, cur, "utf8");
+        extra += "[setup] Appended Google routing guardrails to MEMORY.md (env-token mode).\n";
+      }
+    } catch (err) {
+      extra += `[setup] Could not append Google routing guardrails: ${String(err)}\n`;
     }
   } catch (err) {
     extra += `[setup] reminder workspace docs failed: ${String(err)}\n`;
