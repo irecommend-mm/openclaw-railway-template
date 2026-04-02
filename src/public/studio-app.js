@@ -16,14 +16,6 @@ function setGatewayStatus(text, isError = false) {
   el.style.color = isError ? "#ff8a8a" : "";
 }
 
-function safeJsonParse(s) {
-  try {
-    return { ok: true, value: JSON.parse(s) };
-  } catch (err) {
-    return { ok: false, error: err };
-  }
-}
-
 async function api(path, { method = "GET", body } = {}) {
   const r = await fetch(path, {
     method,
@@ -106,75 +98,6 @@ function renderChapters(project) {
 let ws = null;
 let wsConnected = false;
 const GATEWAY_TOKEN = "__OPENCLAW_GATEWAY_TOKEN__";
-let activeStreamCleanup = null;
-
-function cleanupActiveStream(reason) {
-  if (typeof activeStreamCleanup === "function") {
-    try {
-      activeStreamCleanup(reason || "cleanup");
-    } catch {
-      /* ignore */
-    }
-  }
-  activeStreamCleanup = null;
-}
-
-function attachChatStream({
-  textareaId,
-  onDoneStatus,
-  runLabel,
-  runId,
-}) {
-  cleanupActiveStream("replaced_by_new_stream");
-
-  const textarea = $(textareaId);
-  const startedAt = Date.now();
-  const timeoutMs = 12 * 60 * 1000;
-
-  const handler = (ev) => {
-    const parsed = safeJsonParse(ev.data);
-    if (!parsed.ok) {
-      // Keep listening, but surface the issue once.
-      setGatewayStatus(`Gateway message parse error (${runLabel}).`, true);
-      return;
-    }
-    const data = parsed.value;
-    if (data?.type === "event" && data?.event === "chat.delta") {
-      const payloadRunId = data?.payload?.runId || data?.payload?.clientRunId;
-      if (runId && payloadRunId && payloadRunId !== runId) return;
-      if (data.payload?.delta) textarea.value += data.payload.delta;
-    }
-    if (data?.type === "event" && data?.event === "chat.done") {
-      const payloadRunId = data?.payload?.runId || data?.payload?.clientRunId;
-      if (runId && payloadRunId && payloadRunId !== runId) return;
-      cleanupActiveStream("chat.done");
-      setGatewayStatus(onDoneStatus);
-    }
-  };
-
-  const onCloseOrError = () => {
-    cleanupActiveStream("ws_closed_or_error");
-    setGatewayStatus(`Gateway disconnected during ${runLabel}.`, true);
-  };
-
-  const interval = setInterval(() => {
-    if (Date.now() - startedAt > timeoutMs) {
-      cleanupActiveStream("timeout");
-      setGatewayStatus(`Timed out during ${runLabel}.`, true);
-    }
-  }, 1000);
-
-  ws.addEventListener("message", handler);
-  ws.addEventListener("close", onCloseOrError);
-  ws.addEventListener("error", onCloseOrError);
-
-  activeStreamCleanup = () => {
-    clearInterval(interval);
-    try { ws.removeEventListener("message", handler); } catch {}
-    try { ws.removeEventListener("close", onCloseOrError); } catch {}
-    try { ws.removeEventListener("error", onCloseOrError); } catch {}
-  };
-}
 
 function wsUrlCandidates() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -185,7 +108,6 @@ function wsUrlCandidates() {
 
 function wsConnect() {
   if (wsConnected) return;
-  cleanupActiveStream("ws_reconnect");
   const urls = wsUrlCandidates();
   let idx = 0;
 
@@ -227,12 +149,7 @@ function wsConnect() {
       wsConnected = false;
     };
     ws.onmessage = (ev) => {
-      const parsed = safeJsonParse(ev.data);
-      if (!parsed.ok) {
-        setGatewayStatus("Gateway message parse error (connect).", true);
-        return;
-      }
-      const data = parsed.value;
+      const data = JSON.parse(ev.data);
       if (data.type === "res" && data.ok && data.payload?.type === "hello-ok") {
         wsConnected = true;
         setGatewayStatus("Gateway connected.");
@@ -273,12 +190,17 @@ async function draftNextChapter() {
     },
   };
 
-  attachChatStream({
-    textareaId: "draft",
-    onDoneStatus: "Draft complete.",
-    runLabel: "chapter draft",
-    runId,
-  });
+  const handler = (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === "event" && data.event === "chat.delta") {
+      if (data.payload?.delta) $("draft").value += data.payload.delta;
+    }
+    if (data.type === "event" && data.event === "chat.done") {
+      ws.removeEventListener("message", handler);
+      setGatewayStatus("Draft complete.");
+    }
+  };
+  ws.addEventListener("message", handler);
   ws.send(JSON.stringify(msg));
   setGatewayStatus(`Drafting chapter ${next.chapter.no}...`);
 }
@@ -297,19 +219,23 @@ async function draftChapterByNo() {
   if (!ws || ws.readyState !== 1) throw new Error("gateway_not_connected_yet");
   $("draft").value = "";
   const sessionKey = `ebook:${slug}`;
-  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: next.prompt, options: { stream: true }, clientRunId: runId },
+    params: { sessionKey, message: next.prompt, options: { stream: true } },
   };
-  attachChatStream({
-    textareaId: "draft",
-    onDoneStatus: "Draft complete.",
-    runLabel: "chapter draft",
-    runId,
-  });
+  const handler = (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === "event" && data.event === "chat.delta") {
+      if (data.payload?.delta) $("draft").value += data.payload.delta;
+    }
+    if (data.type === "event" && data.event === "chat.done") {
+      ws.removeEventListener("message", handler);
+      setGatewayStatus("Draft complete.");
+    }
+  };
+  ws.addEventListener("message", handler);
   ws.send(JSON.stringify(msg));
   setGatewayStatus(`Drafting chapter ${next.chapter.no}...`);
 }
@@ -322,19 +248,23 @@ async function draftFrontMatter() {
   if (!ws || ws.readyState !== 1) throw new Error("gateway_not_connected_yet");
   $("draft").value = "";
   const sessionKey = `ebook:${slug}`;
-  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: fm.prompt, options: { stream: true }, clientRunId: runId },
+    params: { sessionKey, message: fm.prompt, options: { stream: true } },
   };
-  attachChatStream({
-    textareaId: "draft",
-    onDoneStatus: "Front matter draft complete.",
-    runLabel: "front matter draft",
-    runId,
-  });
+  const handler = (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === "event" && data.event === "chat.delta") {
+      if (data.payload?.delta) $("draft").value += data.payload.delta;
+    }
+    if (data.type === "event" && data.event === "chat.done") {
+      ws.removeEventListener("message", handler);
+      setGatewayStatus("Front matter draft complete.");
+    }
+  };
+  ws.addEventListener("message", handler);
   ws.send(JSON.stringify(msg));
   setGatewayStatus("Drafting front matter...");
 }
@@ -384,20 +314,24 @@ async function draftRewriteSection() {
 
   $("rewriteDraft").value = "";
   const sessionKey = `ebook:${slug}`;
-  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: prompt, options: { stream: true }, clientRunId: runId },
+    params: { sessionKey, message: prompt, options: { stream: true } },
   };
 
-  attachChatStream({
-    textareaId: "rewriteDraft",
-    onDoneStatus: "Rewrite draft complete.",
-    runLabel: "rewrite draft",
-    runId,
-  });
+  const handler = (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === "event" && data.event === "chat.delta") {
+      if (data.payload?.delta) $("rewriteDraft").value += data.payload.delta;
+    }
+    if (data.type === "event" && data.event === "chat.done") {
+      ws.removeEventListener("message", handler);
+      setGatewayStatus("Rewrite draft complete.");
+    }
+  };
+  ws.addEventListener("message", handler);
   ws.send(JSON.stringify(msg));
   setGatewayStatus("Drafting rewrite...");
 }
@@ -483,7 +417,22 @@ async function saveProject() {
   setStatus(`Saved ${r.slug}`);
 }
 
+async function getStarted() {
+  const slug = $("slug").value.trim();
+  if (!slug) throw new Error("slug_required (enter project slug first)");
+  if (!$("toc").value.trim()) {
+    await newTemplate();
+  }
+  await saveProject();
+  wsConnect();
+  setTimeout(() => {
+    draftFrontMatter().catch((e) => setGatewayStatus(String(e), true));
+  }, 350);
+  setStatus("Get started: saved project, connecting gateway, drafting front matter...");
+}
+
 function wire() {
+  $("btnGetStarted").addEventListener("click", () => getStarted().catch((e) => setStatus(String(e), true)));
   $("btnLoad").addEventListener("click", () => loadProject().catch((e) => setStatus(String(e), true)));
   $("btnNew").addEventListener("click", () => newTemplate());
   $("btnSave").addEventListener("click", () => saveProject().catch((e) => setStatus(String(e), true)));
@@ -500,4 +449,3 @@ function wire() {
 }
 
 wire();
-
