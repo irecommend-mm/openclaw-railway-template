@@ -16,6 +16,14 @@ function setGatewayStatus(text, isError = false) {
   el.style.color = isError ? "#ff8a8a" : "";
 }
 
+function safeJsonParse(raw) {
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
+}
+
 async function api(path, { method = "GET", body } = {}) {
   const r = await fetch(path, {
     method,
@@ -98,70 +106,170 @@ function renderChapters(project) {
 let ws = null;
 let wsConnected = false;
 const GATEWAY_TOKEN = "__OPENCLAW_GATEWAY_TOKEN__";
+let wsConnectPromise = null;
+let activeStreamCleanup = null;
+
+function cleanupActiveStream() {
+  if (typeof activeStreamCleanup === "function") {
+    try {
+      activeStreamCleanup();
+    } catch {}
+  }
+  activeStreamCleanup = null;
+}
 
 function wsUrlCandidates() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${location.host}`;
   // Different OpenClaw builds have used different WS paths; try a short list.
-  return [`${base}/ws`, `${base}/gateway`, `${base}/`];
+  return [
+    `${base}/ws`,
+    `${base}/gateway`,
+    `${base}/openclaw/ws`,
+    `${base}/openclaw`,
+    `${base}/`,
+  ];
 }
 
-function wsConnect() {
-  if (wsConnected) return;
-  const urls = wsUrlCandidates();
-  let idx = 0;
+function attachChatStream({ textareaId, runId, onDoneMessage }) {
+  cleanupActiveStream();
+  const target = $(textareaId);
 
-  function tryNext() {
-    if (idx >= urls.length) {
-      setGatewayStatus("Gateway WS connect failed (all paths).", true);
+  const onMessage = (ev) => {
+    const parsed = safeJsonParse(ev.data);
+    if (!parsed.ok) {
+      setGatewayStatus("Gateway sent invalid JSON frame.", true);
       return;
     }
-    const url = urls[idx++];
-    setGatewayStatus(`Connecting: ${url} ...`);
-    ws = new WebSocket(url);
-    ws.onopen = () => {
-      // Minimal connect. This works when gateway.controlUi.allowInsecureAuth=true (your template sets it).
-      const msg = {
-        type: "req",
-        id: crypto.randomUUID(),
-        method: "connect",
-        params: {
-          minProtocol: 3,
-          maxProtocol: 3,
-          client: { id: "ebook-studio", version: "1.0", platform: "web", mode: "operator" },
-          role: "operator",
-          scopes: ["operator.read", "operator.write"],
-          caps: [],
-          commands: [],
-          permissions: {},
-          auth: { token: GATEWAY_TOKEN },
-          locale: navigator.language || "en-US",
-          userAgent: navigator.userAgent,
-        },
-      };
-      ws.send(JSON.stringify(msg));
-    };
-    ws.onerror = () => {
-      try { ws.close(); } catch {}
-    };
-    ws.onclose = () => {
-      if (!wsConnected) tryNext();
-      wsConnected = false;
-    };
-    ws.onmessage = (ev) => {
-      const data = JSON.parse(ev.data);
-      if (data.type === "res" && data.ok && data.payload?.type === "hello-ok") {
-        wsConnected = true;
-        setGatewayStatus("Gateway connected.");
-      }
-      // Some gateways send connect.challenge; in insecure mode it may be ignorable.
-      if (data.type === "res" && data.ok === false) {
-        setGatewayStatus(`Gateway connect error: ${JSON.stringify(data.error || data)}`, true);
-      }
-    };
-  }
+    const data = parsed.value;
+    if (data?.type === "event" && data?.event === "chat.delta") {
+      const payloadRunId = data?.payload?.runId || data?.payload?.clientRunId;
+      if (runId && payloadRunId && payloadRunId !== runId) return;
+      if (data.payload?.delta) target.value += data.payload.delta;
+    }
+    if (data?.type === "event" && data?.event === "chat.done") {
+      const payloadRunId = data?.payload?.runId || data?.payload?.clientRunId;
+      if (runId && payloadRunId && payloadRunId !== runId) return;
+      cleanupActiveStream();
+      setGatewayStatus(onDoneMessage || "Draft complete.");
+    }
+  };
+  const onClose = () => {
+    cleanupActiveStream();
+    setGatewayStatus("Gateway connection closed during draft.", true);
+  };
+  const onError = () => {
+    cleanupActiveStream();
+    setGatewayStatus("Gateway connection errored during draft.", true);
+  };
 
-  tryNext();
+  const timer = setTimeout(() => {
+    cleanupActiveStream();
+    setGatewayStatus("Draft timed out waiting for completion.", true);
+  }, 12 * 60 * 1000);
+
+  ws.addEventListener("message", onMessage);
+  ws.addEventListener("close", onClose);
+  ws.addEventListener("error", onError);
+  activeStreamCleanup = () => {
+    clearTimeout(timer);
+    try { ws.removeEventListener("message", onMessage); } catch {}
+    try { ws.removeEventListener("close", onClose); } catch {}
+    try { ws.removeEventListener("error", onError); } catch {}
+  };
+}
+
+async function wsPreflightStatus() {
+  const r = await api("/setup/api/status");
+  const configured = Boolean(r?.configured);
+  const gateway = String(r?.gateway || "");
+  if (!configured) {
+    throw new Error("Gateway not configured yet. Open /setup and complete onboarding first.");
+  }
+  if (!(gateway === "ready" || gateway === "starting")) {
+    throw new Error(`Gateway status is "${gateway || "unknown"}". Start/repair it from /setup.`);
+  }
+}
+
+async function wsConnect() {
+  if (wsConnected && ws && ws.readyState === 1) return;
+  if (wsConnectPromise) return wsConnectPromise;
+
+  wsConnectPromise = (async () => {
+    await wsPreflightStatus();
+    cleanupActiveStream();
+    const urls = wsUrlCandidates();
+    let idx = 0;
+
+    while (idx < urls.length) {
+      const url = urls[idx++];
+      setGatewayStatus(`Connecting: ${url} ...`);
+      try {
+        await new Promise((resolve, reject) => {
+          ws = new WebSocket(url);
+          let settled = false;
+          const finish = (fn, arg) => {
+            if (settled) return;
+            settled = true;
+            try { fn(arg); } catch {}
+          };
+          const timeout = setTimeout(() => finish(reject, new Error("connect_timeout")), 7000);
+
+          ws.onopen = () => {
+            const msg = {
+              type: "req",
+              id: crypto.randomUUID(),
+              method: "connect",
+              params: {
+                minProtocol: 3,
+                maxProtocol: 3,
+                client: { id: "ebook-studio", version: "1.0", platform: "web", mode: "operator" },
+                role: "operator",
+                scopes: ["operator.read", "operator.write"],
+                caps: [],
+                commands: [],
+                permissions: {},
+                auth: { token: GATEWAY_TOKEN },
+                locale: navigator.language || "en-US",
+                userAgent: navigator.userAgent,
+              },
+            };
+            ws.send(JSON.stringify(msg));
+          };
+
+          ws.onerror = () => finish(reject, new Error("ws_error"));
+          ws.onclose = () => {
+            wsConnected = false;
+            if (!settled) finish(reject, new Error("ws_closed"));
+          };
+          ws.onmessage = (ev) => {
+            const parsed = safeJsonParse(ev.data);
+            if (!parsed.ok) return;
+            const data = parsed.value;
+            if (data?.type === "res" && data.ok && data?.payload?.type === "hello-ok") {
+              clearTimeout(timeout);
+              wsConnected = true;
+              setGatewayStatus("Gateway connected.");
+              finish(resolve);
+              return;
+            }
+            if (data?.type === "res" && data.ok === false) {
+              clearTimeout(timeout);
+              finish(reject, new Error(`connect_rejected: ${JSON.stringify(data.error || data)}`));
+            }
+          };
+        });
+        return;
+      } catch {
+        try { if (ws) ws.close(); } catch {}
+      }
+    }
+    throw new Error("Gateway WS connect failed (all paths).");
+  })().finally(() => {
+    wsConnectPromise = null;
+  });
+
+  return wsConnectPromise;
 }
 
 async function draftNextChapter() {
@@ -169,7 +277,7 @@ async function draftNextChapter() {
   if (!slug) throw new Error("slug_required");
   const next = await api("/studio/api/next-chapter", { method: "POST", body: { slug } });
   $("chapterNo").value = String(next.chapter.no);
-  if (!wsConnected) wsConnect();
+  if (!wsConnected || !ws || ws.readyState !== 1) await wsConnect();
   if (!ws || ws.readyState !== 1) {
     throw new Error("gateway_not_connected_yet");
   }
@@ -190,17 +298,7 @@ async function draftNextChapter() {
     },
   };
 
-  const handler = (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.type === "event" && data.event === "chat.delta") {
-      if (data.payload?.delta) $("draft").value += data.payload.delta;
-    }
-    if (data.type === "event" && data.event === "chat.done") {
-      ws.removeEventListener("message", handler);
-      setGatewayStatus("Draft complete.");
-    }
-  };
-  ws.addEventListener("message", handler);
+  attachChatStream({ textareaId: "draft", runId, onDoneMessage: "Draft complete." });
   ws.send(JSON.stringify(msg));
   setGatewayStatus(`Drafting chapter ${next.chapter.no}...`);
 }
@@ -215,27 +313,18 @@ async function draftChapterByNo() {
     body: { slug, chapterNo },
   });
   $("chapterNo").value = String(next.chapter.no);
-  if (!wsConnected) wsConnect();
+  if (!wsConnected || !ws || ws.readyState !== 1) await wsConnect();
   if (!ws || ws.readyState !== 1) throw new Error("gateway_not_connected_yet");
   $("draft").value = "";
   const sessionKey = `ebook:${slug}`;
+  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: next.prompt, options: { stream: true } },
+    params: { sessionKey, message: next.prompt, options: { stream: true }, clientRunId: runId },
   };
-  const handler = (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.type === "event" && data.event === "chat.delta") {
-      if (data.payload?.delta) $("draft").value += data.payload.delta;
-    }
-    if (data.type === "event" && data.event === "chat.done") {
-      ws.removeEventListener("message", handler);
-      setGatewayStatus("Draft complete.");
-    }
-  };
-  ws.addEventListener("message", handler);
+  attachChatStream({ textareaId: "draft", runId, onDoneMessage: "Draft complete." });
   ws.send(JSON.stringify(msg));
   setGatewayStatus(`Drafting chapter ${next.chapter.no}...`);
 }
@@ -244,27 +333,18 @@ async function draftFrontMatter() {
   const slug = $("slug").value.trim();
   if (!slug) throw new Error("slug_required");
   const fm = await api("/studio/api/front-matter", { method: "POST", body: { slug } });
-  if (!wsConnected) wsConnect();
+  if (!wsConnected || !ws || ws.readyState !== 1) await wsConnect();
   if (!ws || ws.readyState !== 1) throw new Error("gateway_not_connected_yet");
   $("draft").value = "";
   const sessionKey = `ebook:${slug}`;
+  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: fm.prompt, options: { stream: true } },
+    params: { sessionKey, message: fm.prompt, options: { stream: true }, clientRunId: runId },
   };
-  const handler = (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.type === "event" && data.event === "chat.delta") {
-      if (data.payload?.delta) $("draft").value += data.payload.delta;
-    }
-    if (data.type === "event" && data.event === "chat.done") {
-      ws.removeEventListener("message", handler);
-      setGatewayStatus("Front matter draft complete.");
-    }
-  };
-  ws.addEventListener("message", handler);
+  attachChatStream({ textareaId: "draft", runId, onDoneMessage: "Front matter draft complete." });
   ws.send(JSON.stringify(msg));
   setGatewayStatus("Drafting front matter...");
 }
@@ -284,7 +364,7 @@ async function draftRewriteSection() {
   const endHeading = $("endHeading").value.trim();
   if (!slug) throw new Error("slug_required");
   if (!startHeading) throw new Error("startHeading_required");
-  if (!wsConnected) wsConnect();
+  if (!wsConnected || !ws || ws.readyState !== 1) await wsConnect();
   if (!ws || ws.readyState !== 1) throw new Error("gateway_not_connected_yet");
 
   const proj = await api(`/studio/api/project?slug=${encodeURIComponent(slug)}`);
@@ -314,24 +394,15 @@ async function draftRewriteSection() {
 
   $("rewriteDraft").value = "";
   const sessionKey = `ebook:${slug}`;
+  const runId = crypto.randomUUID();
   const msg = {
     type: "req",
     id: crypto.randomUUID(),
     method: "chat.run",
-    params: { sessionKey, message: prompt, options: { stream: true } },
+    params: { sessionKey, message: prompt, options: { stream: true }, clientRunId: runId },
   };
 
-  const handler = (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.type === "event" && data.event === "chat.delta") {
-      if (data.payload?.delta) $("rewriteDraft").value += data.payload.delta;
-    }
-    if (data.type === "event" && data.event === "chat.done") {
-      ws.removeEventListener("message", handler);
-      setGatewayStatus("Rewrite draft complete.");
-    }
-  };
-  ws.addEventListener("message", handler);
+  attachChatStream({ textareaId: "rewriteDraft", runId, onDoneMessage: "Rewrite draft complete." });
   ws.send(JSON.stringify(msg));
   setGatewayStatus("Drafting rewrite...");
 }
@@ -424,7 +495,7 @@ async function getStarted() {
     await newTemplate();
   }
   await saveProject();
-  wsConnect();
+  await wsConnect();
   setTimeout(() => {
     draftFrontMatter().catch((e) => setGatewayStatus(String(e), true));
   }, 350);
