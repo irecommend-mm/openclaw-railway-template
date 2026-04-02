@@ -9,44 +9,98 @@ metadata:
       bins: ["gog"]
 ---
 
-<!-- gog-docs-skill v1 -->
+<!-- gog-docs-skill v2 -->
 
-# gog Docs (manual mode)
+# Google Gmail + Docs (env-token mode)
 
-Use `gog` CLI for Google Docs operations in this workspace.
+Use direct Google APIs via `curl` with Railway variables. This avoids fragile `gog auth add` browser flow in headless Railway.
 
-## Preflight
+## Required Railway variables
 
-Run before docs actions:
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_USER` (account email, e.g. `a.komyat@gmail.com`)
+
+## Preflight check (run first)
 
 ```bash
-gog --account a.komyat@gmail.com drive ls --limit 5
+test -n "$GMAIL_CLIENT_ID" && test -n "$GMAIL_CLIENT_SECRET" && test -n "$GMAIL_REFRESH_TOKEN" && test -n "$GMAIL_USER"
 ```
 
-If auth is missing, run:
+## Access token helper
+
+Always create token first:
 
 ```bash
-gog auth credentials ~/.config/gogcli/credentials.json
-gog auth add a.komyat@gmail.com --services drive,gmail,calendar,contacts
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
 ```
 
-## Read docs
+## Simple user commands mapping
+
+When user asks these natural commands, run the mapped shell exactly:
+
+- `google gmail latest 3`
 
 ```bash
-gog --account a.komyat@gmail.com docs info <DOC_ID>
-gog --account a.komyat@gmail.com docs cat <DOC_ID>
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+"https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=3&q=in:inbox"
 ```
 
-## Write docs (confirm first)
+- `google docs read <DOC_ID>`
 
 ```bash
-gog --account a.komyat@gmail.com docs write <DOC_ID> "Updated content"
-gog --account a.komyat@gmail.com docs insert <DOC_ID> "New paragraph" --index 0
+DOC_ID="<DOC_ID>"
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+"https://docs.googleapis.com/v1/documents/$DOC_ID"
+```
+
+- `google docs create "<TITLE>"`
+
+```bash
+TITLE="New Document"
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+"https://docs.googleapis.com/v1/documents" \
+-d "{\"title\":\"$TITLE\"}"
+```
+
+- `google docs write <DOC_ID> "<TEXT>"`
+
+```bash
+DOC_ID="<DOC_ID>"
+TEXT="Hello from OpenClaw"
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+"https://docs.googleapis.com/v1/documents/$DOC_ID:batchUpdate" \
+-d "{\"requests\":[{\"insertText\":{\"location\":{\"index\":1},\"text\":\"$TEXT\"}}]}"
 ```
 
 ## Rules
 
-- Always use `--account a.komyat@gmail.com`.
-- For write/update/insert/delete, show draft and ask user confirmation unless user explicitly says "write now".
-- If a command fails, report the exact command error and next step.
-- Do not suggest Python libraries or Dockerfile edits for docs tasks.
+- Prefer env-token API flow over `gog auth add` in Railway.
+- Do not suggest service-account JSON upload to GitHub.
+- For write actions, confirm with user unless explicitly requested to run now.
+- On failure, show raw command stderr/json and next step only.
