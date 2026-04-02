@@ -129,6 +129,101 @@ function resolveGatewayToken() {
 const OPENCLAW_GATEWAY_TOKEN = resolveGatewayToken();
 process.env.OPENCLAW_GATEWAY_TOKEN = OPENCLAW_GATEWAY_TOKEN;
 
+/** Google OAuth (refresh token) + Docs helpers for /__railway/google/* — avoids fragile insertText index 1 in long docs. */
+async function googleOAuthAccessToken() {
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN?.trim();
+  if (!clientId || !clientSecret || !refreshToken) {
+    return {
+      ok: false,
+      error: "missing_google_oauth_env",
+      detail: "Need GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN (or GMAIL_* aliases).",
+    };
+  }
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: j.error || "token_request_failed",
+      detail: j,
+    };
+  }
+  if (!j.access_token) {
+    return { ok: false, error: "no_access_token", detail: j };
+  }
+  return { ok: true, accessToken: j.access_token };
+}
+
+function docsMaxBodyEndIndex(docJson) {
+  const content = docJson?.body?.content;
+  if (!Array.isArray(content) || content.length === 0) return 2;
+  let maxEnd = 1;
+  for (const el of content) {
+    if (typeof el.endIndex === "number") maxEnd = Math.max(maxEnd, el.endIndex);
+  }
+  return maxEnd;
+}
+
+/** Append before the document body's trailing slot (API: insert at endIndex - 1 of body). */
+function docsAppendInsertIndex(docJson) {
+  const maxEnd = docsMaxBodyEndIndex(docJson);
+  return Math.max(1, maxEnd - 1);
+}
+
+function buildDeleteBodyContentRequests(docJson) {
+  const content = docJson?.body?.content;
+  if (!Array.isArray(content) || content.length === 0) return [];
+  const spans = [];
+  for (const el of content) {
+    const s = el.startIndex;
+    const e = el.endIndex;
+    if (typeof s === "number" && typeof e === "number" && e > s) {
+      spans.push({ startIndex: s, endIndex: e });
+    }
+  }
+  spans.sort((a, b) => b.startIndex - a.startIndex);
+  return spans.map((range) => ({ deleteContentRange: { range } }));
+}
+
+/**
+ * Build a plain-text view of the Google Doc body and a charOffset->docIndex map.
+ * This allows marker-based section rewrites without replacing the whole document.
+ */
+function docsPlainTextIndexMap(docJson) {
+  const content = docJson?.body?.content;
+  if (!Array.isArray(content)) {
+    return { text: "", charToDocIndex: [], appendIndex: docsAppendInsertIndex(docJson) };
+  }
+  let text = "";
+  const charToDocIndex = [];
+  for (const block of content) {
+    const elements = block?.paragraph?.elements;
+    if (!Array.isArray(elements)) continue;
+    for (const el of elements) {
+      const runText = el?.textRun?.content;
+      const start = el?.startIndex;
+      if (typeof runText !== "string" || typeof start !== "number") continue;
+      for (let i = 0; i < runText.length; i += 1) {
+        text += runText[i];
+        charToDocIndex.push(start + i);
+      }
+    }
+  }
+  return { text, charToDocIndex, appendIndex: docsAppendInsertIndex(docJson) };
+}
+
 let cachedOpenclawVersion = null;
 let cachedChannelsHelp = null;
 
@@ -500,7 +595,7 @@ function requireGatewayBearer(req, res, next) {
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "8mb" }));
 
 app.get("/styles.css", (_req, res) => {
   res.sendFile(path.join(process.cwd(), "src", "public", "styles.css"));
@@ -1048,7 +1143,9 @@ function syncRailwayTelegramRemindersSkill() {
 const META_CLI_FB_SKILL = "meta-cli-fb";
 const META_CLI_FB_SKILL_MARKER = "<!-- meta-cli-fb-skill v2 -->";
 const GOG_DOCS_SKILL = "gog-docs";
-const GOG_DOCS_SKILL_MARKER = "<!-- gog-docs-skill v4 -->";
+const GOG_DOCS_SKILL_MARKER = "<!-- gog-docs-skill v5 -->";
+const EBOOK_LONGFORM_MM_SKILL = "ebook-longform-mm";
+const EBOOK_LONGFORM_MM_SKILL_MARKER = "<!-- ebook-longform-mm-skill v1 -->";
 
 function syncMetaCliFbSkill() {
   const srcDir = path.join(process.cwd(), "skills", META_CLI_FB_SKILL);
@@ -1089,6 +1186,31 @@ function syncGogDocsSkill() {
     try {
       const cur = fs.readFileSync(destSkill, "utf8");
       if (cur.includes(GOG_DOCS_SKILL_MARKER)) {
+        needCopy = false;
+      }
+    } catch {}
+  }
+  if (needCopy) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.cpSync(srcDir, destDir, { recursive: true });
+  }
+  return { updated: needCopy, skipped: false };
+}
+
+function syncEbookLongformMmSkill() {
+  const srcDir = path.join(process.cwd(), "skills", EBOOK_LONGFORM_MM_SKILL);
+  const destDir = path.join(WORKSPACE_DIR, "skills", EBOOK_LONGFORM_MM_SKILL);
+  const srcSkill = path.join(srcDir, "SKILL.md");
+  if (!fs.existsSync(srcSkill)) {
+    log.warn("skills", `bundled skill missing: ${srcSkill} (skip copying to workspace)`);
+    return { updated: false, skipped: true };
+  }
+  const destSkill = path.join(destDir, "SKILL.md");
+  let needCopy = true;
+  if (fs.existsSync(destSkill)) {
+    try {
+      const cur = fs.readFileSync(destSkill, "utf8");
+      if (cur.includes(EBOOK_LONGFORM_MM_SKILL_MARKER)) {
         needCopy = false;
       }
     } catch {}
@@ -1254,6 +1376,8 @@ const REMINDER_DOC_MARKER =
   "<!-- openclaw-railway-template-reminder-v4 -->";
 const GOOGLE_BOT_ROUTING_MARKER =
   "<!-- openclaw-railway-template-google-routing-v1 -->";
+const GOOGLE_WRAPPER_API_MARKER =
+  "<!-- openclaw-railway-template-google-wrapper-api-v1 -->";
 
 function reminderWorkspaceDocs() {
   const heartbeat = [
@@ -1332,7 +1456,16 @@ function reminderWorkspaceDocs() {
     "",
   ].join("\n");
 
-  return { heartbeat, cronReminders, memoryStub, googleBotRouting };
+  const googleWrapperApiMemory = [
+    GOOGLE_WRAPPER_API_MARKER,
+    "",
+    "### Google Docs writes (wrapper — preferred on Railway)",
+    "",
+    "Use `POST http://127.0.0.1:${PORT:-8080}/__railway/google/docs/append` or `/__railway/google/docs/replace-body` with `Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN` and JSON `{ \"docId\", \"text\" }`. The server computes valid insert indices — avoid raw `batchUpdate` with `index:1` on non-empty docs.",
+    "",
+  ].join("\n");
+
+  return { heartbeat, cronReminders, memoryStub, googleBotRouting, googleWrapperApiMemory };
 }
 
 /**
@@ -1407,7 +1540,13 @@ async function applyReminderAndHeartbeatDefaults() {
   try {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
     fs.mkdirSync(path.join(WORKSPACE_DIR, "data"), { recursive: true });
-    const { heartbeat, cronReminders, memoryStub, googleBotRouting } = reminderWorkspaceDocs();
+    const {
+      heartbeat,
+      cronReminders,
+      memoryStub,
+      googleBotRouting,
+      googleWrapperApiMemory,
+    } = reminderWorkspaceDocs();
 
     const skillSync = syncRailwayTelegramRemindersSkill();
     const skillDestSkillMd = path.join(
@@ -1460,6 +1599,24 @@ async function applyReminderAndHeartbeatDefaults() {
       extra += `[setup] gog-docs SKILL.md on disk: ${fs.existsSync(gogSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
     }
 
+    const ebookSkillSync = syncEbookLongformMmSkill();
+    const ebookSkillMd = path.join(
+      WORKSPACE_DIR,
+      "skills",
+      EBOOK_LONGFORM_MM_SKILL,
+      "SKILL.md",
+    );
+    if (ebookSkillSync.skipped) {
+      extra += "[setup] Bundled skill ebook-longform-mm not under ./skills — skipped.\n";
+    } else if (ebookSkillSync.updated) {
+      extra += "[setup] Installed OpenClaw workspace skill skills/ebook-longform-mm from template bundle.\n";
+    } else {
+      extra += `[setup] Skill ebook-longform-mm already synced; expect SKILL.md at ${ebookSkillMd}\n`;
+    }
+    if (!ebookSkillSync.skipped) {
+      extra += `[setup] ebook-longform-mm SKILL.md on disk: ${fs.existsSync(ebookSkillMd) ? "yes" : "NO — check volume / OPENCLAW_WORKSPACE_DIR"}\n`;
+    }
+
     const legacyFileReminders = path.join(WORKSPACE_DIR, "FILE_REMINDERS.md");
     if (!skillSync.skipped && fs.existsSync(legacyFileReminders)) {
       try {
@@ -1502,6 +1659,17 @@ async function applyReminderAndHeartbeatDefaults() {
       }
     } catch (err) {
       extra += `[setup] Could not append Google routing guardrails: ${String(err)}\n`;
+    }
+    try {
+      let cur2 = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf8") : "";
+      if (!cur2.includes(GOOGLE_WRAPPER_API_MARKER)) {
+        const sep2 = cur2.trim().length ? "\n\n" : "";
+        cur2 += `${sep2}${googleWrapperApiMemory}`;
+        fs.writeFileSync(memoryPath, cur2, "utf8");
+        extra += "[setup] Appended Google wrapper API note to MEMORY.md.\n";
+      }
+    } catch (err) {
+      extra += `[setup] Could not append Google wrapper API note: ${String(err)}\n`;
     }
   } catch (err) {
     extra += `[setup] reminder workspace docs failed: ${String(err)}\n`;
@@ -1852,6 +2020,287 @@ app.post("/__railway/reminder/cancel", requireGatewayBearer, (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     log.error("reminder-cancel", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/** Gmail list (env OAuth); same bearer as gateway proxy. */
+app.post("/__railway/google/gmail/list", requireGatewayBearer, async (req, res) => {
+  try {
+    const tok = await googleOAuthAccessToken();
+    if (!tok.ok) {
+      return res.status(503).json({ ok: false, error: tok.error, detail: tok.detail });
+    }
+    const maxResults = Math.min(
+      50,
+      Math.max(1, Number.parseInt(String(req.body?.maxResults ?? "10"), 10) || 10),
+    );
+    const q = req.body?.q != null ? String(req.body.q) : "in:inbox";
+    const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    url.searchParams.set("maxResults", String(maxResults));
+    if (q) url.searchParams.set("q", q);
+    const r = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${tok.accessToken}` },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return res.status(r.status).json({ ok: false, error: "gmail_api", detail: j });
+    }
+    return res.json({ ok: true, data: j });
+  } catch (err) {
+    log.error("google-gmail", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/** Fetch Doc JSON (full body). */
+app.post("/__railway/google/docs/get", requireGatewayBearer, async (req, res) => {
+  try {
+    const docId = req.body?.docId != null ? String(req.body.docId).trim() : "";
+    if (!docId) {
+      return res.status(400).json({ ok: false, error: "docId_required" });
+    }
+    const tok = await googleOAuthAccessToken();
+    if (!tok.ok) {
+      return res.status(503).json({ ok: false, error: tok.error, detail: tok.detail });
+    }
+    const r = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return res.status(r.status).json({ ok: false, error: "docs_get_failed", detail: j });
+    }
+    return res.json({ ok: true, document: j });
+  } catch (err) {
+    log.error("google-docs-get", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/** Append text at end of document body (correct insert index). */
+app.post("/__railway/google/docs/append", requireGatewayBearer, async (req, res) => {
+  try {
+    const docId = req.body?.docId != null ? String(req.body.docId).trim() : "";
+    const text = req.body?.text != null ? String(req.body.text) : "";
+    if (!docId) {
+      return res.status(400).json({ ok: false, error: "docId_required" });
+    }
+    const tok = await googleOAuthAccessToken();
+    if (!tok.ok) {
+      return res.status(503).json({ ok: false, error: tok.error, detail: tok.detail });
+    }
+    const getRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const docJson = await getRes.json().catch(() => ({}));
+    if (!getRes.ok) {
+      return res.status(getRes.status).json({ ok: false, error: "docs_get_failed", detail: docJson });
+    }
+    const index = docsAppendInsertIndex(docJson);
+    const batchRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tok.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requests: [{ insertText: { location: { index }, text } }],
+        }),
+      },
+    );
+    const batchJson = await batchRes.json().catch(() => ({}));
+    if (!batchRes.ok) {
+      return res
+        .status(batchRes.status)
+        .json({ ok: false, error: "batchUpdate_failed", detail: batchJson, insertIndex: index });
+    }
+    const verify = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}?fields=documentId,title,revisionId`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const verifyJson = await verify.json().catch(() => ({}));
+    return res.json({
+      ok: true,
+      insertIndex: index,
+      batchUpdate: batchJson,
+      verify: verify.ok ? verifyJson : verifyJson,
+    });
+  } catch (err) {
+    log.error("google-docs-append", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/**
+ * Replace entire body with new text: delete top-level structural spans bottom-up, then insert at 1.
+ * Use when user asks to rewrite / replace content in the same doc.
+ */
+app.post("/__railway/google/docs/replace-body", requireGatewayBearer, async (req, res) => {
+  try {
+    const docId = req.body?.docId != null ? String(req.body.docId).trim() : "";
+    const text = req.body?.text != null ? String(req.body.text) : "";
+    if (!docId) {
+      return res.status(400).json({ ok: false, error: "docId_required" });
+    }
+    const tok = await googleOAuthAccessToken();
+    if (!tok.ok) {
+      return res.status(503).json({ ok: false, error: tok.error, detail: tok.detail });
+    }
+    const getRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const docJson = await getRes.json().catch(() => ({}));
+    if (!getRes.ok) {
+      return res.status(getRes.status).json({ ok: false, error: "docs_get_failed", detail: docJson });
+    }
+    const deletes = buildDeleteBodyContentRequests(docJson);
+    const requests = [...deletes, { insertText: { location: { index: 1 }, text } }];
+    const batchRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tok.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ requests }),
+      },
+    );
+    const batchJson = await batchRes.json().catch(() => ({}));
+    if (!batchRes.ok) {
+      return res.status(batchRes.status).json({
+        ok: false,
+        error: "batchUpdate_failed",
+        detail: batchJson,
+        deleteOps: deletes.length,
+      });
+    }
+    const verify = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}?fields=documentId,title,revisionId`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const verifyJson = await verify.json().catch(() => ({}));
+    return res.json({
+      ok: true,
+      deleteOps: deletes.length,
+      batchUpdate: batchJson,
+      verify: verify.ok ? verifyJson : verifyJson,
+    });
+  } catch (err) {
+    log.error("google-docs-replace-body", String(err));
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/**
+ * Rewrite a section delimited by heading markers.
+ * Deletes [startHeading, endHeading) and inserts newSectionText at startHeading.
+ * If endHeading is empty, rewrites from startHeading to end-of-document body.
+ */
+app.post("/__railway/google/docs/section-rewrite", requireGatewayBearer, async (req, res) => {
+  try {
+    const docId = req.body?.docId != null ? String(req.body.docId).trim() : "";
+    const startHeading = req.body?.startHeading != null ? String(req.body.startHeading) : "";
+    const endHeadingRaw = req.body?.endHeading != null ? String(req.body.endHeading) : "";
+    const newSectionText = req.body?.newSectionText != null ? String(req.body.newSectionText) : "";
+    if (!docId) return res.status(400).json({ ok: false, error: "docId_required" });
+    if (!startHeading.trim()) {
+      return res.status(400).json({ ok: false, error: "startHeading_required" });
+    }
+
+    const tok = await googleOAuthAccessToken();
+    if (!tok.ok) {
+      return res.status(503).json({ ok: false, error: tok.error, detail: tok.detail });
+    }
+
+    const getRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const docJson = await getRes.json().catch(() => ({}));
+    if (!getRes.ok) {
+      return res.status(getRes.status).json({ ok: false, error: "docs_get_failed", detail: docJson });
+    }
+
+    const { text, charToDocIndex, appendIndex } = docsPlainTextIndexMap(docJson);
+    const startChar = text.indexOf(startHeading);
+    if (startChar < 0) {
+      return res.status(404).json({ ok: false, error: "start_heading_not_found" });
+    }
+    const endHeading = endHeadingRaw.trim();
+    const endChar =
+      endHeading.length > 0
+        ? text.indexOf(endHeading, startChar + startHeading.length)
+        : text.length;
+    if (endHeading.length > 0 && endChar < 0) {
+      return res.status(404).json({ ok: false, error: "end_heading_not_found" });
+    }
+    if (endChar <= startChar) {
+      return res.status(400).json({ ok: false, error: "invalid_marker_order" });
+    }
+
+    const startIndex = charToDocIndex[startChar];
+    const endIndex = endChar >= text.length ? appendIndex : charToDocIndex[endChar];
+    if (!Number.isFinite(startIndex) || !Number.isFinite(endIndex) || endIndex <= startIndex) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_doc_indices",
+        detail: { startIndex, endIndex, startChar, endChar },
+      });
+    }
+
+    const replacement =
+      newSectionText.endsWith("\n") || newSectionText.length === 0
+        ? newSectionText
+        : `${newSectionText}\n`;
+    const batchRes = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tok.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requests: [
+            { deleteContentRange: { range: { startIndex, endIndex } } },
+            { insertText: { location: { index: startIndex }, text: replacement } },
+          ],
+        }),
+      },
+    );
+    const batchJson = await batchRes.json().catch(() => ({}));
+    if (!batchRes.ok) {
+      return res.status(batchRes.status).json({
+        ok: false,
+        error: "batchUpdate_failed",
+        detail: batchJson,
+        startIndex,
+        endIndex,
+      });
+    }
+
+    const verify = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}?fields=documentId,title,revisionId`,
+      { headers: { Authorization: `Bearer ${tok.accessToken}` } },
+    );
+    const verifyJson = await verify.json().catch(() => ({}));
+    return res.json({
+      ok: true,
+      startIndex,
+      endIndex,
+      charsReplaced: endChar - startChar,
+      batchUpdate: batchJson,
+      verify: verifyJson,
+    });
+  } catch (err) {
+    log.error("google-docs-section-rewrite", String(err));
     return res.status(500).json({ ok: false, error: String(err) });
   }
 });

@@ -1,139 +1,101 @@
 ---
 name: gog-docs
 description: >-
-  Manage Google Docs from the CLI using gog in manual mode. Use for reading
-  document metadata/content and writing/updating docs after user confirmation.
+  Read Gmail and read/write Google Docs on Railway using OAuth env vars. Prefer
+  the wrapper HTTP helpers (correct Docs indices); curl to Google APIs only as
+  fallback.
 metadata:
   openclaw:
     requires:
-      bins: ["gog"]
+      bins: ["curl"]
 ---
 
-<!-- gog-docs-skill v4 -->
+<!-- gog-docs-skill v5 -->
 
-# Google Gmail + Docs (env-token mode)
+# Google Gmail + Docs (Railway)
 
-Use direct Google APIs via `curl` with Railway variables. This avoids fragile `gog auth add` browser flow in headless Railway.
+## Primary path: wrapper APIs (no wrong insert index)
+
+This template exposes authenticated routes on **the same process** as OpenClaw. They refresh OAuth, compute the correct **append** index for Docs, and return JSON. **Use these first** on Railway — do not tell the user to copy-paste into Docs unless they explicitly want manual mode.
+
+**Auth:** `Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN` (already set in the container).
+
+**Base URL:** `http://127.0.0.1:${PORT:-8080}`
+
+### Endpoints
+
+| Action | Method | Path | JSON body |
+|--------|--------|------|-----------|
+| List inbox (or query) | POST | `/__railway/google/gmail/list` | `{ "maxResults": 10, "q": "in:inbox" }` |
+| Read doc | POST | `/__railway/google/docs/get` | `{ "docId": "..." }` |
+| Append to end of doc | POST | `/__railway/google/docs/append` | `{ "docId": "...", "text": "..." }` |
+| Replace entire doc body | POST | `/__railway/google/docs/replace-body` | `{ "docId": "...", "text": "..." }` |
+| Rewrite one section by headings | POST | `/__railway/google/docs/section-rewrite` | `{ "docId": "...", "startHeading": "...", "endHeading": "...", "newSectionText": "..." }` |
+
+### Examples (run in the Railway shell / agent exec)
+
+Small payload:
+
+```bash
+curl -s -X POST "http://127.0.0.1:${PORT:-8080}/__railway/google/docs/append" \
+  -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"docId\":\"YOUR_DOC_ID\",\"text\":\"Hello\"}"
+```
+
+Long text from file (avoids shell-escaping issues; uses `python3` from the image):
+
+```bash
+printf '%s' "$LONG_TEXT" > /tmp/gdoc-body.txt
+python3 -c 'import json,sys; print(json.dumps({"docId":sys.argv[1],"text":open(sys.argv[2],encoding="utf-8").read()},ensure_ascii=False))' "$DOC_ID" /tmp/gdoc-body.txt | \
+curl -s -X POST "http://127.0.0.1:${PORT:-8080}/__railway/google/docs/append" \
+  -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d @-
+```
+
+**Rewrite / replace whole document** (same doc ID, new content):
+
+```bash
+python3 -c 'import json,sys; print(json.dumps({"docId":sys.argv[1],"text":open(sys.argv[2],encoding="utf-8").read()},ensure_ascii=False))' "$DOC_ID" /tmp/gdoc-body.txt | \
+curl -s -X POST "http://127.0.0.1:${PORT:-8080}/__railway/google/docs/replace-body" \
+  -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d @-
+```
+
+Gmail:
+
+```bash
+curl -s -X POST "http://127.0.0.1:${PORT:-8080}/__railway/google/gmail/list" \
+  -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"maxResults":5,"q":"in:inbox"}'
+```
+
+Reply **only after** the response JSON shows `"ok": true` and include the relevant `verify` / `batchUpdate` snippet. If `"ok": false`, paste `detail` and do not claim success.
+
+---
 
 ## Required Railway variables
 
-- `GMAIL_CLIENT_ID`
-- `GMAIL_CLIENT_SECRET`
-- `GMAIL_REFRESH_TOKEN`
-- `GMAIL_USER` (account email, e.g. `a.komyat@gmail.com`)
+- `GMAIL_CLIENT_ID` (or `GOOGLE_CLIENT_ID`)
+- `GMAIL_CLIENT_SECRET` (or `GOOGLE_CLIENT_SECRET`)
+- `GMAIL_REFRESH_TOKEN` (or `GOOGLE_REFRESH_TOKEN`)
+- `GMAIL_USER` (or `GOOGLE_ACCOUNT_EMAIL`) — account email
 
-## Preflight check (run first)
+---
 
-```bash
-test -n "$GMAIL_CLIENT_ID" && test -n "$GMAIL_CLIENT_SECRET" && test -n "$GMAIL_REFRESH_TOKEN" && test -n "$GMAIL_USER"
-```
+## Fallback: direct Google APIs with curl
 
-## Access token helper
+Only if wrapper routes are unreachable. **Do not use `insertText` at index 1 for append** on non-empty docs — it causes API index errors. For append without the wrapper, `documents.get` first and insert at `endIndex - 1` of the body.
 
-Always create token first:
-
-```bash
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-```
-
-## Simple user commands mapping
-
-When user asks these natural commands, run the mapped shell exactly:
-
-- `google gmail latest 3`
-
-```bash
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
-"https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=3&q=in:inbox"
-```
-
-- `google docs read <DOC_ID>`
-
-```bash
-DOC_ID="<DOC_ID>"
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
-"https://docs.googleapis.com/v1/documents/$DOC_ID"
-```
-
-- `google docs create "<TITLE>"`
-
-```bash
-TITLE="New Document"
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-"https://docs.googleapis.com/v1/documents" \
--d "{\"title\":\"$TITLE\"}"
-```
-
-- `google docs write <DOC_ID> "<TEXT>"`
-
-```bash
-DOC_ID="<DOC_ID>"
-TEXT="Hello from OpenClaw"
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-"https://docs.googleapis.com/v1/documents/$DOC_ID:batchUpdate" \
--d "{\"requests\":[{\"insertText\":{\"location\":{\"index\":1},\"text\":\"$TEXT\"}}]}"
-```
+---
 
 ## Rules
 
-- Prefer env-token API flow over `gog auth add` in Railway.
-- Do not suggest service-account JSON upload to GitHub.
-- For write actions, execute directly when user asks to write to document. Use draft mode only if user explicitly asks for draft/review first.
-- Never claim success unless command output confirms success.
-- For docs writes/updates, always do post-write verification (`docs read` or metadata check) before replying "done".
-- If a command fails, reply with raw stderr/json and mark the action as failed (do not switch to fallback narrative).
-- If user says "send/push now", execute immediately and still return verification output.
-- Never answer with "copy this manually into docs" unless user explicitly asks for manual mode.
-
-## Robust docs write (for long text)
-
-For long paragraphs, do not inline huge JSON in shell. Use python to build payload safely:
-
-```bash
-DOC_ID="<DOC_ID>"
-TEXT="$(cat <<'EOF'
-<LONG_TEXT_HERE>
-EOF
-)"
-ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
-  -d client_id="$GMAIL_CLIENT_ID" \
-  -d client_secret="$GMAIL_CLIENT_SECRET" \
-  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
-  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-python3 - <<'PY' > /tmp/docs-payload.json
-import json, os
-doc_id = os.environ["DOC_ID"]
-text = os.environ["TEXT"]
-payload = {"requests":[{"insertText":{"location":{"index":1},"text":text}}]}
-print(json.dumps(payload, ensure_ascii=False))
-PY
-curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-"https://docs.googleapis.com/v1/documents/$DOC_ID:batchUpdate" \
--d @/tmp/docs-payload.json
-curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
-"https://docs.googleapis.com/v1/documents/$DOC_ID?fields=documentId,title"
-```
+- **Prefer** `/__railway/google/docs/append`, `/__railway/google/docs/section-rewrite`, and `/__railway/google/docs/replace-body` over raw `batchUpdate` from the agent.
+- Do not suggest service-account JSON or Dockerfile edits for this flow.
+- Never claim success unless the HTTP response has `"ok": true`.
+- Never answer with “copy this into Google Docs” unless the user explicitly asks for manual mode.
+- If a call fails, show the JSON error; do not switch to a fake-success narrative.
