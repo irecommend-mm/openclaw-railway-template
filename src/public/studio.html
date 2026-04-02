@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🦞 Ebook Studio — Cowork Mode</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* Keep minimal; reuse styles.css palette */
+    .studioGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .studioCol { display: flex; flex-direction: column; gap: 12px; }
+    .studioRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .studioRow > * { flex: 0 0 auto; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    textarea { width: 100%; min-height: 160px; }
+    .small { font-size: 12px; opacity: .85; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); }
+    .danger { border-color: rgba(255,80,80,.45) !important; }
+    @media (max-width: 980px) { .studioGrid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div>
+        <h1>🦞 Ebook Studio</h1>
+        <p class="subtle">Cowork-style longform writing: you approve each chapter, then it exports into Google Docs.</p>
+      </div>
+      <div class="studioRow">
+        <span class="pill">Protected by Setup Password</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="studioRow">
+        <label class="label">Project slug</label>
+        <input id="slug" class="input mono" placeholder="e.g. notebooklm-ebook-2026" style="min-width:320px" />
+        <button id="btnLoad" class="button">Load</button>
+        <button id="btnNew" class="button secondary">New template</button>
+        <button id="btnSave" class="button primary">Save</button>
+        <span id="status" class="small"></span>
+      </div>
+      <div class="small subtle">Tip: slug is stored in the Railway volume under <span class="mono">workspace/data/ebook-projects/</span>.</div>
+    </section>
+
+    <div class="studioGrid">
+      <section class="card studioCol">
+        <h2>Book settings</h2>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Doc ID</label>
+          <input id="docId" class="input mono" placeholder="Google Doc ID (from URL)" style="flex:1 1 auto; min-width:340px" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Title</label>
+          <input id="bookTitle" class="input" placeholder="Ebook title" style="flex:1 1 auto" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Subtitle</label>
+          <input id="subtitle" class="input" placeholder="Subtitle" style="flex:1 1 auto" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Audience</label>
+          <input id="audience" class="input" placeholder="For whom?" style="flex:1 1 auto" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Tone</label>
+          <input id="tone" class="input" placeholder="Friendly, professional, etc." style="flex:1 1 auto" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Target words</label>
+          <input id="targetWords" class="input mono" placeholder="80000" style="width:140px" />
+          <span class="small subtle">(~60k–100k typical)</span>
+        </div>
+      </section>
+
+      <section class="card studioCol">
+        <h2>TOC + style</h2>
+        <label class="label">Table of Contents (one chapter per line, like: <span class="mono">1. Title</span>)</label>
+        <textarea id="toc" class="input mono" placeholder="1. ...&#10;2. ..."></textarea>
+        <label class="label">Style guide (rules for voice, formatting, do/don't)</label>
+        <textarea id="style" class="input" placeholder="Write in Myanmar..."></textarea>
+      </section>
+    </div>
+
+    <section class="card studioCol">
+      <h2>Project status</h2>
+      <div class="studioRow">
+        <button id="btnRefresh" class="button secondary">Refresh status</button>
+        <button id="btnFrontMatter" class="button primary">Draft front matter</button>
+        <button id="btnExportReplace" class="button danger">Approve & export (replace body)</button>
+        <span class="small subtle">Use “replace body” once at the beginning (front matter + reset chapters).</span>
+      </div>
+      <div id="chapterList" class="small mono"></div>
+    </section>
+
+    <section class="card studioCol">
+      <h2>Lesson template (used inside every chapter)</h2>
+      <textarea id="lessonTemplate" class="input" placeholder="Provide a standard post template for each lesson block..."></textarea>
+    </section>
+
+    <div class="studioGrid">
+      <section class="card studioCol">
+        <h2>Draft (streamed from OpenClaw gateway)</h2>
+        <div class="studioRow">
+          <button id="btnConnect" class="button secondary">Connect gateway</button>
+          <button id="btnNext" class="button primary">Draft next chapter</button>
+          <button id="btnDraftChapterNo" class="button secondary">Draft chapter #</button>
+          <button id="btnClearDraft" class="button secondary">Clear</button>
+          <span id="gw" class="small"></span>
+        </div>
+        <textarea id="draft" class="input" placeholder="Draft will appear here..."></textarea>
+        <div class="studioRow">
+          <label class="label">Chapter #</label>
+          <input id="chapterNo" class="input mono" style="width:90px" placeholder="1" />
+          <button id="btnApproveAppend" class="button danger">Approve & export (append)</button>
+        </div>
+        <div class="small subtle">Export writes to Google Doc using server-side OAuth + verification. It also marks the chapter as done in the project state.</div>
+      </section>
+
+      <section class="card studioCol">
+        <h2>Rewrite (chapter/section)</h2>
+        <div class="small subtle">Use exact headings that exist in the Doc. Example: <span class="mono">အခန်း (၄): ...</span></div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">Start heading</label>
+          <input id="startHeading" class="input mono" placeholder="အခန်း (၄): ..." style="flex:1 1 auto" />
+        </div>
+        <div class="studioRow">
+          <label class="label" style="min-width:120px">End heading</label>
+          <input id="endHeading" class="input mono" placeholder="အခန်း (၅): ... (or blank to end)" style="flex:1 1 auto" />
+        </div>
+        <button id="btnRewritePrompt" class="button primary">Draft rewrite section</button>
+        <textarea id="rewriteDraft" class="input" placeholder="Rewrite draft will appear here..."></textarea>
+        <button id="btnApplySectionRewrite" class="button danger">Apply section rewrite to Doc</button>
+      </section>
+    </div>
+  </div>
+
+  <script src="/studio-app.js"></script>
+</body>
+</html>
+
