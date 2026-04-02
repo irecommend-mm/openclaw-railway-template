@@ -9,7 +9,7 @@ metadata:
       bins: ["gog"]
 ---
 
-<!-- gog-docs-skill v2 -->
+<!-- gog-docs-skill v3 -->
 
 # Google Gmail + Docs (env-token mode)
 
@@ -103,4 +103,36 @@ curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: appli
 - Prefer env-token API flow over `gog auth add` in Railway.
 - Do not suggest service-account JSON upload to GitHub.
 - For write actions, confirm with user unless explicitly requested to run now.
-- On failure, show raw command stderr/json and next step only.
+- Never claim success unless command output confirms success.
+- For docs writes/updates, always do post-write verification (`docs read` or metadata check) before replying "done".
+- If a command fails, reply with raw stderr/json and mark the action as failed (do not switch to fallback narrative).
+- If user says "send/push now", execute immediately and still return verification output.
+
+## Robust docs write (for long text)
+
+For long paragraphs, do not inline huge JSON in shell. Use python to build payload safely:
+
+```bash
+DOC_ID="<DOC_ID>"
+TEXT="$(cat <<'EOF'
+<LONG_TEXT_HERE>
+EOF
+)"
+ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+  -d client_id="$GMAIL_CLIENT_ID" \
+  -d client_secret="$GMAIL_CLIENT_SECRET" \
+  -d refresh_token="$GMAIL_REFRESH_TOKEN" \
+  -d grant_type=refresh_token | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+python3 - <<'PY' > /tmp/docs-payload.json
+import json, os
+doc_id = os.environ["DOC_ID"]
+text = os.environ["TEXT"]
+payload = {"requests":[{"insertText":{"location":{"index":1},"text":text}}]}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+"https://docs.googleapis.com/v1/documents/$DOC_ID:batchUpdate" \
+-d @/tmp/docs-payload.json
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+"https://docs.googleapis.com/v1/documents/$DOC_ID?fields=documentId,title"
+```
